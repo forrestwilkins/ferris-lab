@@ -14,9 +14,17 @@ fn read_numbers() -> Vec<i32> {
         .collect()
 }
 
+fn sort_numbers(numbers: Vec<i32>) -> Vec<i32> {
+    let mut sorted_numbers = numbers;
+    sorted_numbers.sort();
+    sorted_numbers
+}
+
 fn main() {
-    println!("Enter comma-separated numbers (e.g. 3, 1, 4):");
+    println!("Enter comma-separated numbers (e.g. 1, 2, 3):");
 
     let numbers = read_numbers();
-    println!("{:?}", numbers);
+    let sorted_numbers = sort_numbers(numbers);
+
+    println!("Sorted numbers: {:?}", sorted_numbers);
 }
