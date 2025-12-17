@@ -1,3 +1,3 @@
 # Ferris Lab
 
-Fun and learning with Rust.
+Fun and learning with Rust
