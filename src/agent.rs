@@ -2,25 +2,29 @@ use crate::config::Config;
 use crate::executor::Executor;
 use crate::ollama::OllamaClient;
 use crate::search::WebSearch;
+use crate::writer::FileWriter;
 
 pub struct Agent {
     pub config: Config,
     pub ollama: OllamaClient,
     pub executor: Executor,
     pub search: WebSearch,
+    pub writer: FileWriter,
 }
 
 impl Agent {
     pub fn new(config: Config) -> Self {
         let ollama = OllamaClient::new(config.ollama_host.clone(), config.ollama_model.clone());
-        let executor = Executor::new("/workspace".to_string());
+        let executor = Executor::new("./workspace".to_string());
         let search = WebSearch::new();
+        let writer = FileWriter::new("./workspace".to_string());
 
         Self {
             config,
             ollama,
             executor,
             search,
+            writer,
         }
     }
 
@@ -57,6 +61,22 @@ impl Agent {
                     Ok(response) => println!("[{}] 🤖: {}", self.config.agent_id, response.trim()),
                     Err(e) => println!("[{}] Ollama generate failed: {}", self.config.agent_id, e),
                 }
+            }
+
+            // Test code generation and file writing
+            let code_prompt = "Write a simple Rust function called `add` that takes two i32 parameters and returns their sum. Only output the code, no explanation.";
+            match self.ollama.generate(code_prompt).await {
+                Ok(code) => {
+                    let code = code.trim();
+                    match self.writer.write_file("test/add.rs", code).await {
+                        Ok(path) => {
+                            println!("[{}] Code written to: {}", self.config.agent_id, path);
+                            println!("[{}] Generated:\n{}", self.config.agent_id, code);
+                        }
+                        Err(e) => println!("[{}] File write failed: {}", self.config.agent_id, e),
+                    }
+                }
+                Err(e) => println!("[{}] Code generation failed: {}", self.config.agent_id, e),
             }
         } else {
             println!("[{}] Warning: Ollama not available", self.config.agent_id);

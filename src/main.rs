@@ -3,6 +3,7 @@ mod config;
 mod executor;
 mod ollama;
 mod search;
+mod writer;
 
 use agent::Agent;
 use config::Config;
