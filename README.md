@@ -14,7 +14,7 @@ Ferris Lab is an automated system where multiple agents can work together to bui
 
 ## Architecture
 
-Each agent is a self-contained unit running `gpt-oss:20b` inside Docker. You can run a single agent on its own, or connect multiple agents across one or more machines. Each agent runs a small web server with a WebSocket endpoint, allowing agents to connect directly to each other for real-time messaging. Agents communicate with users through Discord.
+Each agent is a self-contained unit running inside Docker, powered by a model served via Ollama. The default model is `gpt-oss:20b`, but each agent can be configured to use a different model. You can run a single agent on its own, or connect multiple agents across one or more machines. Each agent runs a small web server with a WebSocket endpoint, allowing agents to connect directly to each other for real-time messaging. Agents communicate with users through Discord.
 
 Agents can either roam free, searching the web and coming up with their own ideas for CLI tools, or be steered in a particular direction like database inspection tools or JSON processing utilities.
 
