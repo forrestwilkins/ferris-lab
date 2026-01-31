@@ -43,6 +43,12 @@ impl Agent {
             "[{}] Ollama enabled: {}",
             self.config.agent_id, self.config.ollama_enabled
         );
+        if !self.config.peer_addresses.is_empty() {
+            println!(
+                "[{}] Peer addresses: {:?}",
+                self.config.agent_id, self.config.peer_addresses
+            );
+        }
 
         // Start WebSocket server
         self.websocket.start().await;
