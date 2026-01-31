@@ -1,3 +1,4 @@
+use crate::output;
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
@@ -116,9 +117,9 @@ impl WebSocketServer {
 
         let addr = format!("0.0.0.0:{}", self.port);
         let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
-        println!(
-            "[{}] WebSocket server listening on :{}",
-            agent_id, self.port
+        output::agent_success(
+            &agent_id,
+            &format!("WebSocket server listening on :{}", self.port),
         );
 
         tokio::spawn(async move {
@@ -145,7 +146,7 @@ impl WebSocketServer {
 
         match connect_result {
             Ok(Ok((ws_stream, _))) => {
-                println!("[{}] Connected to peer: {}", agent_id, peer_url_owned);
+                output::peer_event(&agent_id, &format!("Connected to peer: {}", peer_url_owned));
                 let (mut write, mut read) = ws_stream.split();
 
                 // Send presence message
@@ -153,7 +154,7 @@ impl WebSocketServer {
                     agent_id: agent_id.clone(),
                 };
                 let msg = serde_json::to_string(&presence).unwrap();
-                println!("[{}] >> Sending: {}", agent_id, msg);
+                output::peer_send(&agent_id, &msg);
                 let _ = write.send(TungsteniteMessage::Text(msg.into())).await;
 
                 // Wait for presence_ack with timeout
@@ -165,7 +166,7 @@ impl WebSocketServer {
                                     return Some(peer_id.clone());
                                 }
                                 // Handle other messages
-                                println!("[{}] << Received: {}", agent_id, text);
+                                output::peer_recv(&agent_id, &text);
                                 let _ = incoming_tx.send(parsed).await;
                             }
                         }
@@ -176,9 +177,9 @@ impl WebSocketServer {
 
                 match ack_result {
                     Ok(Some(peer_id)) => {
-                        println!(
-                            "[{}] Handshake complete with peer: {}",
-                            agent_id, peer_id
+                        output::agent_success(
+                            &agent_id,
+                            &format!("🤝 Handshake complete with peer: {}", peer_id),
                         );
                         connected_peers.write().await.insert(peer_id.clone());
                         connected_urls.write().await.insert(peer_url_owned.clone());
@@ -192,7 +193,7 @@ impl WebSocketServer {
                         tokio::spawn(async move {
                             while let Some(Ok(msg)) = read.next().await {
                                 if let TungsteniteMessage::Text(text) = msg {
-                                    println!("[{}] << Received: {}", agent_id_recv, text);
+                                    output::peer_recv(&agent_id_recv, &text);
                                     if let Ok(parsed) = serde_json::from_str::<AgentMessage>(&text)
                                     {
                                         let _ = incoming_tx_clone.send(parsed).await;
@@ -202,13 +203,13 @@ impl WebSocketServer {
                             // Peer disconnected
                             connected_peers_clone.write().await.remove(&peer_id);
                             connected_urls_clone.write().await.remove(&peer_url_for_cleanup);
-                            println!("[{}] Peer disconnected: {}", agent_id_recv, peer_id);
+                            output::agent_warn(&agent_id_recv, &format!("Peer disconnected: {}", peer_id));
                         });
 
                         let agent_id_send = agent_id.clone();
                         tokio::spawn(async move {
                             while let Ok(msg) = rx.recv().await {
-                                println!("[{}] >> Sending: {}", agent_id_send, msg);
+                                output::peer_send(&agent_id_send, &msg);
                                 if write
                                     .send(TungsteniteMessage::Text(msg.into()))
                                     .await
@@ -223,17 +224,17 @@ impl WebSocketServer {
                     }
                     Ok(None) => {
                         let err = "Connection closed before handshake".to_string();
-                        println!(
-                            "[{}] Failed to connect to {}: {}",
-                            agent_id, peer_url_owned, err
+                        output::agent_error(
+                            &agent_id,
+                            &format!("Failed to connect to {}: {}", peer_url_owned, err),
                         );
                         PeerConnectionResult::Failed(peer_url_owned, err)
                     }
                     Err(_) => {
                         let err = "Handshake timeout".to_string();
-                        println!(
-                            "[{}] Failed to connect to {}: {}",
-                            agent_id, peer_url_owned, err
+                        output::agent_error(
+                            &agent_id,
+                            &format!("Failed to connect to {}: {}", peer_url_owned, err),
                         );
                         PeerConnectionResult::Failed(peer_url_owned, err)
                     }
@@ -241,17 +242,17 @@ impl WebSocketServer {
             }
             Ok(Err(e)) => {
                 let err = e.to_string();
-                println!(
-                    "[{}] Failed to connect to {}: {}",
-                    agent_id, peer_url_owned, err
+                output::agent_error(
+                    &agent_id,
+                    &format!("Failed to connect to {}: {}", peer_url_owned, err),
                 );
                 PeerConnectionResult::Failed(peer_url_owned, err)
             }
             Err(_) => {
                 let err = "Connection timeout".to_string();
-                println!(
-                    "[{}] Failed to connect to {}: {}",
-                    agent_id, peer_url_owned, err
+                output::agent_error(
+                    &agent_id,
+                    &format!("Failed to connect to {}: {}", peer_url_owned, err),
                 );
                 PeerConnectionResult::Failed(peer_url_owned, err)
             }
@@ -325,7 +326,7 @@ async fn handle_incoming(
 
     while let Some(Ok(msg)) = receiver.next().await {
         if let Message::Text(text) = msg {
-            println!("[{}] << Received: {}", agent_id, text);
+            output::peer_recv(&agent_id, &text);
 
             if let Ok(parsed) = serde_json::from_str::<AgentMessage>(&text) {
                 match &parsed {
@@ -333,24 +334,27 @@ async fn handle_incoming(
                         // New peer connected, send ack and track them
                         peer_agent_id = Some(peer_id.clone());
                         connected_peers.write().await.insert(peer_id.clone());
-                        println!("[{}] Peer joined: {}", agent_id, peer_id);
+                        output::peer_event(&agent_id, &format!("Peer joined: {}", peer_id));
 
                         // Send presence ack
                         let ack = AgentMessage::PresenceAck {
                             agent_id: agent_id.clone(),
                         };
                         let ack_msg = serde_json::to_string(&ack).unwrap();
-                        println!("[{}] >> Sending: {}", agent_id, ack_msg);
+                        output::peer_send(&agent_id, &ack_msg);
                         let _ = tx.send(ack_msg);
                     }
-                    AgentMessage::Ping { agent_id: _peer_id, seq } => {
+                    AgentMessage::Ping {
+                        agent_id: _peer_id,
+                        seq,
+                    } => {
                         // Respond with pong
                         let pong = AgentMessage::Pong {
                             agent_id: agent_id.clone(),
                             seq: *seq,
                         };
                         let pong_msg = serde_json::to_string(&pong).unwrap();
-                        println!("[{}] >> Sending: {}", agent_id, pong_msg);
+                        output::peer_send(&agent_id, &pong_msg);
                         let _ = tx.send(pong_msg);
                     }
                     _ => {
@@ -365,7 +369,7 @@ async fn handle_incoming(
     // Peer disconnected
     if let Some(peer_id) = peer_agent_id {
         connected_peers.write().await.remove(&peer_id);
-        println!("[{}] Peer disconnected: {}", agent_id, peer_id);
+        output::agent_warn(&agent_id, &format!("Peer disconnected: {}", peer_id));
     }
 }
 
@@ -379,7 +383,7 @@ async fn handle_outgoing(
         agent_id: agent_id.clone(),
     };
     let msg = serde_json::to_string(&presence).unwrap();
-    println!("[{}] >> Sending: {}", agent_id, msg);
+    output::peer_send(&agent_id, &msg);
     let _ = sender.send(Message::Text(msg.into())).await;
 
     // Forward broadcast messages

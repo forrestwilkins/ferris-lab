@@ -1,6 +1,7 @@
 use crate::config::Config;
 use crate::executor::Executor;
 use crate::ollama::OllamaClient;
+use crate::output;
 use crate::search::WebSearch;
 use crate::websocket::{AgentMessage, PeerConnectionResult, WebSocketServer};
 use crate::writer::FileWriter;
@@ -34,19 +35,24 @@ impl Agent {
     }
 
     pub async fn run(&self) {
-        println!("[{}] Agent starting...", self.config.agent_id);
-        println!(
-            "[{}] Direction: {}",
-            self.config.agent_id, self.config.direction
-        );
-        println!(
-            "[{}] Ollama enabled: {}",
-            self.config.agent_id, self.config.ollama_enabled
+        output::startup_banner(&self.config.agent_id);
+
+        output::section("Configuration");
+        output::config_item(&self.config.agent_id, "Direction", &self.config.direction);
+        output::config_item(
+            &self.config.agent_id,
+            "Ollama",
+            if self.config.ollama_enabled {
+                "enabled ✓"
+            } else {
+                "disabled"
+            },
         );
         if !self.config.peer_addresses.is_empty() {
-            println!(
-                "[{}] Peer addresses: {:?}",
-                self.config.agent_id, self.config.peer_addresses
+            output::config_item(
+                &self.config.agent_id,
+                "Peers",
+                &format!("{:?}", self.config.peer_addresses),
             );
         }
 
@@ -60,16 +66,20 @@ impl Agent {
         let mut connected_count = 0;
         let mut failed_count = 0;
 
+        output::section("Peer Connections");
+
         if self.config.peer_addresses.is_empty() {
-            println!(
-                "[{}] No peer addresses configured (PEER_ADDRESSES not set)",
-                self.config.agent_id
+            output::agent_info(
+                &self.config.agent_id,
+                "No peer addresses configured (PEER_ADDRESSES not set)",
             );
         } else {
-            println!(
-                "[{}] Attempting to connect to {} peer(s)...",
-                self.config.agent_id,
-                self.config.peer_addresses.len()
+            output::agent_status(
+                &self.config.agent_id,
+                &format!(
+                    "Attempting to connect to {} peer(s)...",
+                    self.config.peer_addresses.len()
+                ),
             );
 
             for peer in &self.config.peer_addresses {
@@ -79,26 +89,41 @@ impl Agent {
                     }
                     PeerConnectionResult::Failed(url, reason) => {
                         failed_count += 1;
-                        println!(
-                            "[{}] Could not establish connection to {}: {}",
-                            self.config.agent_id, url, reason
+                        output::agent_warn(
+                            &self.config.agent_id,
+                            &format!("Could not connect to {}: {}", url, reason),
                         );
                     }
                 }
             }
 
-            println!(
-                "[{}] Peer connection summary: {} connected, {} failed",
-                self.config.agent_id, connected_count, failed_count
-            );
+            if connected_count > 0 {
+                output::agent_success(
+                    &self.config.agent_id,
+                    &format!(
+                        "Peer connection summary: {} connected, {} failed",
+                        connected_count, failed_count
+                    ),
+                );
+            } else {
+                output::agent_warn(
+                    &self.config.agent_id,
+                    &format!(
+                        "Peer connection summary: {} connected, {} failed",
+                        connected_count, failed_count
+                    ),
+                );
+            }
         }
 
         // Give time for any incoming connections to complete handshake
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
         // Test peer communication
+        output::section("Communication Test");
+
         if self.websocket.has_peers().await {
-            println!("[{}] Testing peer communication...", self.config.agent_id);
+            output::agent_status(&self.config.agent_id, "Testing peer communication...");
 
             if self.config.ollama_enabled {
                 // Send LLM-generated greeting
@@ -107,9 +132,9 @@ impl Agent {
                     match self.ollama.generate(prompt).await {
                         Ok(greeting) => {
                             let greeting = greeting.trim().to_string();
-                            println!(
-                                "[{}] Sending LLM-generated greeting to peers: {}",
-                                self.config.agent_id, greeting
+                            output::agent_success(
+                                &self.config.agent_id,
+                                &format!("Sending greeting to peers: \"{}\"", greeting),
                             );
                             self.websocket
                                 .broadcast(AgentMessage::Text {
@@ -119,17 +144,20 @@ impl Agent {
                                 .await;
                         }
                         Err(e) => {
-                            println!(
-                                "[{}] Failed to generate greeting: {}, sending random number instead",
-                                self.config.agent_id, e
+                            output::agent_warn(
+                                &self.config.agent_id,
+                                &format!(
+                                    "Failed to generate greeting: {}, sending random number",
+                                    e
+                                ),
                             );
                             self.send_random_number().await;
                         }
                     }
                 } else {
-                    println!(
-                        "[{}] Ollama not available, sending random number instead",
-                        self.config.agent_id
+                    output::agent_warn(
+                        &self.config.agent_id,
+                        "Ollama not available, sending random number instead",
                     );
                     self.send_random_number().await;
                 }
@@ -138,22 +166,17 @@ impl Agent {
                 self.send_random_number().await;
             }
         } else {
-            println!(
-                "[{}] No peers connected, skipping communication test",
-                self.config.agent_id
+            output::agent_info(
+                &self.config.agent_id,
+                "No peers connected, skipping communication test",
             );
         }
 
         // Run Ollama functionality tests only if enabled
         if self.config.ollama_enabled {
-            println!(
-                "[{}] Ollama: {}",
-                self.config.agent_id, self.config.ollama_host
-            );
-            println!(
-                "[{}] Model: {}",
-                self.config.agent_id, self.config.ollama_model
-            );
+            output::section("Ollama LLM");
+            output::config_item(&self.config.agent_id, "Host", &self.config.ollama_host);
+            output::config_item(&self.config.agent_id, "Model", &self.config.ollama_model);
 
             // Fetch weather from the web
             let weather = match self
@@ -163,18 +186,24 @@ impl Agent {
             {
                 Ok(body) => {
                     let weather = body.trim().to_string();
-                    println!("[{}] Weather fetched: {}", self.config.agent_id, weather);
+                    output::agent_success(
+                        &self.config.agent_id,
+                        &format!("Weather fetched: {}", weather),
+                    );
                     Some(weather)
                 }
                 Err(e) => {
-                    println!("[{}] Web fetch failed: {}", self.config.agent_id, e);
+                    output::agent_error(
+                        &self.config.agent_id,
+                        &format!("Web fetch failed: {}", e),
+                    );
                     None
                 }
             };
 
             // Use Ollama to describe the weather
             if self.ollama.is_available().await {
-                println!("[{}] Ollama connection OK", self.config.agent_id);
+                output::agent_success(&self.config.agent_id, "Ollama connection OK ✓");
 
                 if let Some(weather) = weather {
                     let prompt = format!(
@@ -182,48 +211,50 @@ impl Agent {
                         weather
                     );
                     match self.ollama.generate(&prompt).await {
-                        Ok(response) => {
-                            println!("[{}] Weather: {}", self.config.agent_id, response.trim())
-                        }
-                        Err(e) => {
-                            println!("[{}] Ollama generate failed: {}", self.config.agent_id, e)
-                        }
+                        Ok(response) => output::agent_info(
+                            &self.config.agent_id,
+                            &format!("🌤️  Weather: {}", response.trim()),
+                        ),
+                        Err(e) => output::agent_error(
+                            &self.config.agent_id,
+                            &format!("Ollama generate failed: {}", e),
+                        ),
                     }
                 }
 
                 // Test code generation and file writing
+                output::section("Code Generation");
                 let code_prompt = "Write a simple Rust function called `add` that takes two i32 parameters and returns their sum. Only output the code, no explanation.";
                 match self.ollama.generate(code_prompt).await {
                     Ok(code) => {
                         let code = code.trim();
                         match self.writer.write_file("test/add.rs", code).await {
                             Ok(path) => {
-                                println!("[{}] Code written to: {}", self.config.agent_id, path);
-                                println!("[{}] Generated:\n{}", self.config.agent_id, code);
+                                output::agent_success(
+                                    &self.config.agent_id,
+                                    &format!("Code written to: {}", path),
+                                );
+                                output::code_block(&self.config.agent_id, code);
                             }
-                            Err(e) => {
-                                println!("[{}] File write failed: {}", self.config.agent_id, e)
-                            }
+                            Err(e) => output::agent_error(
+                                &self.config.agent_id,
+                                &format!("File write failed: {}", e),
+                            ),
                         }
                     }
-                    Err(e) => println!("[{}] Code generation failed: {}", self.config.agent_id, e),
+                    Err(e) => output::agent_error(
+                        &self.config.agent_id,
+                        &format!("Code generation failed: {}", e),
+                    ),
                 }
             } else {
-                println!("[{}] Warning: Ollama not available", self.config.agent_id);
+                output::agent_warn(&self.config.agent_id, "Ollama not available");
             }
         } else {
-            println!(
-                "[{}] Ollama disabled, skipping LLM tests",
-                self.config.agent_id
-            );
+            output::agent_info(&self.config.agent_id, "Ollama disabled, skipping LLM tests");
         }
 
-        println!("[{}] Agent ready", self.config.agent_id);
-        println!(
-            "[{}] Connected peers: {}",
-            self.config.agent_id,
-            self.websocket.peer_count().await
-        );
+        output::agent_ready(&self.config.agent_id, self.websocket.peer_count().await);
 
         // Keep the agent running and periodically retry peer connections
         let retry_interval = tokio::time::Duration::from_secs(10);
@@ -236,15 +267,15 @@ impl Agent {
             if !self.config.peer_addresses.is_empty() {
                 for peer in &self.config.peer_addresses {
                     if !self.websocket.is_connected_to_url(peer).await {
-                        println!(
-                            "[{}] Retrying connection to {}...",
-                            self.config.agent_id, peer
+                        output::agent_status(
+                            &self.config.agent_id,
+                            &format!("Retrying connection to {}...", peer),
                         );
                         match self.websocket.connect_to_peer(peer).await {
                             PeerConnectionResult::Connected(_) => {
-                                println!(
-                                    "[{}] Successfully connected to {}",
-                                    self.config.agent_id, peer
+                                output::agent_success(
+                                    &self.config.agent_id,
+                                    &format!("Successfully connected to {}", peer),
                                 );
                             }
                             PeerConnectionResult::Failed(_, _) => {
@@ -258,9 +289,9 @@ impl Agent {
             // Send test message when we first get peers (if we didn't have any at startup)
             if !sent_first_message && self.websocket.has_peers().await {
                 sent_first_message = true;
-                println!(
-                    "[{}] First peer connected! Sending test message...",
-                    self.config.agent_id
+                output::peer_event(
+                    &self.config.agent_id,
+                    "First peer connected! Sending test message...",
                 );
                 if self.config.ollama_enabled {
                     if self.ollama.is_available().await {
@@ -287,9 +318,9 @@ impl Agent {
 
     async fn send_random_number(&self) {
         let value: u64 = rand::rng().random_range(1..=1000000);
-        println!(
-            "[{}] Sending random number to peers: {}",
-            self.config.agent_id, value
+        output::agent_info(
+            &self.config.agent_id,
+            &format!("Sending random number to peers: {}", value),
         );
         self.websocket
             .broadcast(AgentMessage::Number {
