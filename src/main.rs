@@ -1,13 +1,5 @@
-mod agent;
-mod config;
-mod executor;
-mod ollama;
-mod search;
-mod websocket;
-mod writer;
-
-use agent::Agent;
-use config::Config;
+use ferris_lab::agent::Agent;
+use ferris_lab::config::Config;
 
 #[tokio::main]
 async fn main() {
