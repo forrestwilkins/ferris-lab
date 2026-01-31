@@ -4,7 +4,7 @@ A factory for creating CLI utilities with Rust.
 
 ## Overview
 
-Ferris Lab is an automated system where two agents work together to build CLI tools in Rust. The agents operate within a sandboxed Docker environment with limited, focused capabilities:
+Ferris Lab is an automated system where two agents work together to build CLI tools with Rust. The agents operate within a sandboxed Docker environment with limited, focused capabilities:
 
 - Write, run, and test Rust code
 - Search the web for documentation and solutions
