@@ -3,6 +3,7 @@ mod config;
 mod executor;
 mod ollama;
 mod search;
+mod websocket;
 mod writer;
 
 use agent::Agent;
