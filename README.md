@@ -9,12 +9,12 @@ Ferris Lab is an automated system where multiple agents can work together to bui
 - Write, run, and test Rust code
 - Search the web for ideas, documentation, and solutions
 - Collaborate via Git (same machine or over network)
-- Communicate with each other via Redis pub/sub over wifi or the internet
+- Communicate with each other via WebSockets over wifi or the internet
 - Chat with users via Discord to report status and receive instructions when they encounter issues
 
 ## Architecture
 
-Each agent is a self-contained unit running `gpt-oss:20b` inside Docker. You can run a single agent on its own, or connect multiple agents across one or more machines. When running multiple agents, they communicate with each other via Redis pub/sub, supporting both direct messages and shared channels for group discussions. Agents communicate with users through Discord.
+Each agent is a self-contained unit running `gpt-oss:20b` inside Docker. You can run a single agent on its own, or connect multiple agents across one or more machines. Each agent runs a small web server with a WebSocket endpoint, allowing agents to connect directly to each other for real-time messaging. Agents communicate with users through Discord.
 
 Agents can either roam free, searching the web and coming up with their own ideas for CLI tools, or be steered in a particular direction like database inspection tools or JSON processing utilities.
 
