@@ -30,22 +30,36 @@ impl Agent {
         println!("[{}] Ollama: {}", self.config.agent_id, self.config.ollama_host);
         println!("[{}] Model: {}", self.config.agent_id, self.config.ollama_model);
 
-        // Test Ollama connection
+        // Fetch weather from the web
+        let weather = match self.search.fetch_url("https://wttr.in/North+Carolina?format=%l:+%c+%t&u").await {
+            Ok(body) => {
+                let weather = body.trim().to_string();
+                println!("[{}] Weather fetched: {}", self.config.agent_id, weather);
+                Some(weather)
+            }
+            Err(e) => {
+                println!("[{}] Web fetch failed: {}", self.config.agent_id, e);
+                None
+            }
+        };
+
+        // Use Ollama to describe the weather
         if self.ollama.is_available().await {
             println!("[{}] Ollama connection OK", self.config.agent_id);
 
-            match self.ollama.generate("Say hello in exactly 5 words.").await {
-                Ok(response) => println!("[{}] Ollama test: {}", self.config.agent_id, response.trim()),
-                Err(e) => println!("[{}] Ollama generate failed: {}", self.config.agent_id, e),
+            if let Some(weather) = weather {
+                let prompt = format!(
+                    "Based on this weather data: {}\n\n Describe the weather
+                    in one short sentence - accurately based on the data.",
+                    weather
+                );
+                match self.ollama.generate(&prompt).await {
+                    Ok(response) => println!("[{}] 🤖: {}", self.config.agent_id, response.trim()),
+                    Err(e) => println!("[{}] Ollama generate failed: {}", self.config.agent_id, e),
+                }
             }
         } else {
             println!("[{}] Warning: Ollama not available", self.config.agent_id);
-        }
-
-        // Test web fetch with weather
-        match self.search.fetch_url("https://wttr.in/North+Carolina?format=%l:+%c+%t&u").await {
-            Ok(body) => println!("[{}] Web fetch OK ({})", self.config.agent_id, body.trim()),
-            Err(e) => println!("[{}] Web fetch failed: {}", self.config.agent_id, e),
         }
 
         println!("[{}] Agent ready", self.config.agent_id);
