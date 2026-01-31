@@ -42,9 +42,9 @@ impl Agent {
             println!("[{}] Warning: Ollama not available", self.config.agent_id);
         }
 
-        // Test web fetch
-        match self.search.fetch_url("https://httpbin.org/get").await {
-            Ok(body) => println!("[{}] Web fetch OK ({} bytes)", self.config.agent_id, body.len()),
+        // Test web fetch with weather
+        match self.search.fetch_url("https://wttr.in/North+Carolina?format=%l:+%c+%t").await {
+            Ok(body) => println!("[{}] Web fetch OK ({})", self.config.agent_id, body.trim()),
             Err(e) => println!("[{}] Web fetch failed: {}", self.config.agent_id, e),
         }
 
