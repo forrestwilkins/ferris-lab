@@ -43,7 +43,7 @@ impl Agent {
         }
 
         // Test web fetch with weather
-        match self.search.fetch_url("https://wttr.in/North+Carolina?format=%l:+%c+%t").await {
+        match self.search.fetch_url("https://wttr.in/North+Carolina?format=%l:+%c+%t&u").await {
             Ok(body) => println!("[{}] Web fetch OK ({})", self.config.agent_id, body.trim()),
             Err(e) => println!("[{}] Web fetch failed: {}", self.config.agent_id, e),
         }
