@@ -225,9 +225,63 @@ impl Agent {
             self.websocket.peer_count().await
         );
 
-        // Keep the agent running to maintain WebSocket connections
+        // Keep the agent running and periodically retry peer connections
+        let retry_interval = tokio::time::Duration::from_secs(10);
+        let mut sent_first_message = self.websocket.has_peers().await;
+
         loop {
-            tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+            tokio::time::sleep(retry_interval).await;
+
+            // Retry connecting to any peers we're not connected to
+            if !self.config.peer_addresses.is_empty() {
+                for peer in &self.config.peer_addresses {
+                    if !self.websocket.is_connected_to_url(peer).await {
+                        println!(
+                            "[{}] Retrying connection to {}...",
+                            self.config.agent_id, peer
+                        );
+                        match self.websocket.connect_to_peer(peer).await {
+                            PeerConnectionResult::Connected(_) => {
+                                println!(
+                                    "[{}] Successfully connected to {}",
+                                    self.config.agent_id, peer
+                                );
+                            }
+                            PeerConnectionResult::Failed(_, _) => {
+                                // Already logged in connect_to_peer
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Send test message when we first get peers (if we didn't have any at startup)
+            if !sent_first_message && self.websocket.has_peers().await {
+                sent_first_message = true;
+                println!(
+                    "[{}] First peer connected! Sending test message...",
+                    self.config.agent_id
+                );
+                if self.config.ollama_enabled {
+                    if self.ollama.is_available().await {
+                        let prompt = "Generate a brief, friendly greeting message to say hello to other AI agents. Keep it under 20 words.";
+                        if let Ok(greeting) = self.ollama.generate(prompt).await {
+                            self.websocket
+                                .broadcast(AgentMessage::Text {
+                                    agent_id: self.config.agent_id.clone(),
+                                    content: greeting.trim().to_string(),
+                                })
+                                .await;
+                        } else {
+                            self.send_random_number().await;
+                        }
+                    } else {
+                        self.send_random_number().await;
+                    }
+                } else {
+                    self.send_random_number().await;
+                }
+            }
         }
     }
 

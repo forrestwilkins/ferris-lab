@@ -72,6 +72,7 @@ pub struct WebSocketServer {
     port: u16,
     tx: broadcast::Sender<String>,
     connected_peers: Arc<RwLock<HashSet<String>>>,
+    connected_urls: Arc<RwLock<HashSet<String>>>,
     incoming_rx: Arc<RwLock<Option<mpsc::Receiver<AgentMessage>>>>,
     incoming_tx: mpsc::Sender<AgentMessage>,
 }
@@ -85,9 +86,15 @@ impl WebSocketServer {
             port,
             tx,
             connected_peers: Arc::new(RwLock::new(HashSet::new())),
+            connected_urls: Arc::new(RwLock::new(HashSet::new())),
             incoming_rx: Arc::new(RwLock::new(Some(incoming_rx))),
             incoming_tx,
         }
+    }
+
+    /// Check if we're already connected to a peer URL
+    pub async fn is_connected_to_url(&self, url: &str) -> bool {
+        self.connected_urls.read().await.contains(url)
     }
 
     pub async fn start(&self) {
@@ -121,9 +128,15 @@ impl WebSocketServer {
 
     /// Connect to a peer and return the result
     pub async fn connect_to_peer(&self, peer_url: &str) -> PeerConnectionResult {
+        // Skip if already connected to this URL
+        if self.is_connected_to_url(peer_url).await {
+            return PeerConnectionResult::Connected(peer_url.to_string());
+        }
+
         let agent_id = self.agent_id.clone();
         let peer_url_owned = peer_url.to_string();
         let connected_peers = self.connected_peers.clone();
+        let connected_urls = self.connected_urls.clone();
         let mut rx = self.tx.subscribe();
         let incoming_tx = self.incoming_tx.clone();
 
@@ -168,11 +181,14 @@ impl WebSocketServer {
                             agent_id, peer_id
                         );
                         connected_peers.write().await.insert(peer_id.clone());
+                        connected_urls.write().await.insert(peer_url_owned.clone());
 
                         // Spawn tasks to handle ongoing communication
                         let agent_id_recv = agent_id.clone();
                         let incoming_tx_clone = incoming_tx.clone();
                         let connected_peers_clone = connected_peers.clone();
+                        let connected_urls_clone = connected_urls.clone();
+                        let peer_url_for_cleanup = peer_url_owned.clone();
                         tokio::spawn(async move {
                             while let Some(Ok(msg)) = read.next().await {
                                 if let TungsteniteMessage::Text(text) = msg {
@@ -185,6 +201,7 @@ impl WebSocketServer {
                             }
                             // Peer disconnected
                             connected_peers_clone.write().await.remove(&peer_id);
+                            connected_urls_clone.write().await.remove(&peer_url_for_cleanup);
                             println!("[{}] Peer disconnected: {}", agent_id_recv, peer_id);
                         });
 
