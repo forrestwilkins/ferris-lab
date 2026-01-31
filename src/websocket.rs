@@ -12,47 +12,95 @@ use futures_util::{
     SinkExt, StreamExt,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{broadcast, mpsc, RwLock};
+use tokio::time::{timeout, Duration};
 use tokio_tungstenite::{connect_async, tungstenite::Message as TungsteniteMessage};
 
+/// Protocol message types for agent-to-agent communication
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum AgentMessage {
+    /// Announce presence when connecting
     #[serde(rename = "presence")]
     Presence { agent_id: String },
-    #[serde(rename = "chat")]
-    Chat { agent_id: String, content: String },
+
+    /// Acknowledge a presence message
+    #[serde(rename = "presence_ack")]
+    PresenceAck { agent_id: String },
+
+    /// Ping to check if peer is alive
+    #[serde(rename = "ping")]
+    Ping { agent_id: String, seq: u64 },
+
+    /// Pong response to ping
+    #[serde(rename = "pong")]
+    Pong { agent_id: String, seq: u64 },
+
+    /// Text message (for LLM-generated content)
+    #[serde(rename = "text")]
+    Text { agent_id: String, content: String },
+
+    /// Number message (for simple testing without LLM)
+    #[serde(rename = "number")]
+    Number { agent_id: String, value: u64 },
+}
+
+impl AgentMessage {
+    pub fn sender_id(&self) -> &str {
+        match self {
+            AgentMessage::Presence { agent_id } => agent_id,
+            AgentMessage::PresenceAck { agent_id } => agent_id,
+            AgentMessage::Ping { agent_id, .. } => agent_id,
+            AgentMessage::Pong { agent_id, .. } => agent_id,
+            AgentMessage::Text { agent_id, .. } => agent_id,
+            AgentMessage::Number { agent_id, .. } => agent_id,
+        }
+    }
+}
+
+/// Result of attempting to connect to a peer
+#[derive(Debug)]
+pub enum PeerConnectionResult {
+    Connected(String),
+    Failed(String, String),
 }
 
 pub struct WebSocketServer {
     agent_id: String,
     port: u16,
     tx: broadcast::Sender<String>,
-    peers: Arc<RwLock<HashMap<String, broadcast::Sender<String>>>>,
+    connected_peers: Arc<RwLock<HashSet<String>>>,
+    incoming_rx: Arc<RwLock<Option<mpsc::Receiver<AgentMessage>>>>,
+    incoming_tx: mpsc::Sender<AgentMessage>,
 }
 
 impl WebSocketServer {
     pub fn new(agent_id: String, port: u16) -> Self {
         let (tx, _) = broadcast::channel(100);
+        let (incoming_tx, incoming_rx) = mpsc::channel(100);
         Self {
             agent_id,
             port,
             tx,
-            peers: Arc::new(RwLock::new(HashMap::new())),
+            connected_peers: Arc::new(RwLock::new(HashSet::new())),
+            incoming_rx: Arc::new(RwLock::new(Some(incoming_rx))),
+            incoming_tx,
         }
     }
 
     pub async fn start(&self) {
         let tx = self.tx.clone();
         let agent_id = self.agent_id.clone();
-        let peers = self.peers.clone();
+        let connected_peers = self.connected_peers.clone();
+        let incoming_tx = self.incoming_tx.clone();
 
         let app_state = AppState {
             tx,
             agent_id: agent_id.clone(),
-            peers,
+            connected_peers,
+            incoming_tx,
         };
 
         let app = Router::new()
@@ -71,56 +119,147 @@ impl WebSocketServer {
         });
     }
 
-    pub async fn connect_to_peer(&self, peer_url: &str) {
+    /// Connect to a peer and return the result
+    pub async fn connect_to_peer(&self, peer_url: &str) -> PeerConnectionResult {
         let agent_id = self.agent_id.clone();
-        let peer_url = peer_url.to_string();
-        let _peers = self.peers.clone();
+        let peer_url_owned = peer_url.to_string();
+        let connected_peers = self.connected_peers.clone();
         let mut rx = self.tx.subscribe();
+        let incoming_tx = self.incoming_tx.clone();
 
-        tokio::spawn(async move {
-            match connect_async(&peer_url).await {
-                Ok((ws_stream, _)) => {
-                    println!("[{}] Connected to peer: {}", agent_id, peer_url);
-                    let (mut write, mut read) = ws_stream.split();
+        // Try to connect with a timeout
+        let connect_result = timeout(Duration::from_secs(5), connect_async(&peer_url_owned)).await;
 
-                    // Send presence message
-                    let presence = AgentMessage::Presence {
-                        agent_id: agent_id.clone(),
-                    };
-                    let msg = serde_json::to_string(&presence).unwrap();
-                    let _ = write.send(TungsteniteMessage::Text(msg.into())).await;
+        match connect_result {
+            Ok(Ok((ws_stream, _))) => {
+                println!("[{}] Connected to peer: {}", agent_id, peer_url_owned);
+                let (mut write, mut read) = ws_stream.split();
 
-                    // Handle incoming messages from peer
-                    let agent_id_clone = agent_id.clone();
-                    tokio::spawn(async move {
-                        while let Some(Ok(msg)) = read.next().await {
-                            if let TungsteniteMessage::Text(text) = msg {
-                                println!("[{}] Received: {}", agent_id_clone, text);
+                // Send presence message
+                let presence = AgentMessage::Presence {
+                    agent_id: agent_id.clone(),
+                };
+                let msg = serde_json::to_string(&presence).unwrap();
+                println!("[{}] >> Sending: {}", agent_id, msg);
+                let _ = write.send(TungsteniteMessage::Text(msg.into())).await;
+
+                // Wait for presence_ack with timeout
+                let ack_result = timeout(Duration::from_secs(3), async {
+                    while let Some(Ok(msg)) = read.next().await {
+                        if let TungsteniteMessage::Text(text) = msg {
+                            if let Ok(parsed) = serde_json::from_str::<AgentMessage>(&text) {
+                                if let AgentMessage::PresenceAck { agent_id: peer_id } = &parsed {
+                                    return Some(peer_id.clone());
+                                }
+                                // Handle other messages
+                                println!("[{}] << Received: {}", agent_id, text);
+                                let _ = incoming_tx.send(parsed).await;
                             }
                         }
-                    });
+                    }
+                    None
+                })
+                .await;
 
-                    // Forward broadcast messages to peer
-                    while let Ok(msg) = rx.recv().await {
-                        if write
-                            .send(TungsteniteMessage::Text(msg.into()))
-                            .await
-                            .is_err()
-                        {
-                            break;
-                        }
+                match ack_result {
+                    Ok(Some(peer_id)) => {
+                        println!(
+                            "[{}] Handshake complete with peer: {}",
+                            agent_id, peer_id
+                        );
+                        connected_peers.write().await.insert(peer_id.clone());
+
+                        // Spawn tasks to handle ongoing communication
+                        let agent_id_recv = agent_id.clone();
+                        let incoming_tx_clone = incoming_tx.clone();
+                        let connected_peers_clone = connected_peers.clone();
+                        tokio::spawn(async move {
+                            while let Some(Ok(msg)) = read.next().await {
+                                if let TungsteniteMessage::Text(text) = msg {
+                                    println!("[{}] << Received: {}", agent_id_recv, text);
+                                    if let Ok(parsed) = serde_json::from_str::<AgentMessage>(&text)
+                                    {
+                                        let _ = incoming_tx_clone.send(parsed).await;
+                                    }
+                                }
+                            }
+                            // Peer disconnected
+                            connected_peers_clone.write().await.remove(&peer_id);
+                            println!("[{}] Peer disconnected: {}", agent_id_recv, peer_id);
+                        });
+
+                        let agent_id_send = agent_id.clone();
+                        tokio::spawn(async move {
+                            while let Ok(msg) = rx.recv().await {
+                                println!("[{}] >> Sending: {}", agent_id_send, msg);
+                                if write
+                                    .send(TungsteniteMessage::Text(msg.into()))
+                                    .await
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                            }
+                        });
+
+                        PeerConnectionResult::Connected(peer_url_owned)
+                    }
+                    Ok(None) => {
+                        let err = "Connection closed before handshake".to_string();
+                        println!(
+                            "[{}] Failed to connect to {}: {}",
+                            agent_id, peer_url_owned, err
+                        );
+                        PeerConnectionResult::Failed(peer_url_owned, err)
+                    }
+                    Err(_) => {
+                        let err = "Handshake timeout".to_string();
+                        println!(
+                            "[{}] Failed to connect to {}: {}",
+                            agent_id, peer_url_owned, err
+                        );
+                        PeerConnectionResult::Failed(peer_url_owned, err)
                     }
                 }
-                Err(e) => {
-                    println!("[{}] Failed to connect to {}: {}", agent_id, peer_url, e);
-                }
             }
-        });
+            Ok(Err(e)) => {
+                let err = e.to_string();
+                println!(
+                    "[{}] Failed to connect to {}: {}",
+                    agent_id, peer_url_owned, err
+                );
+                PeerConnectionResult::Failed(peer_url_owned, err)
+            }
+            Err(_) => {
+                let err = "Connection timeout".to_string();
+                println!(
+                    "[{}] Failed to connect to {}: {}",
+                    agent_id, peer_url_owned, err
+                );
+                PeerConnectionResult::Failed(peer_url_owned, err)
+            }
+        }
     }
 
+    /// Broadcast a message to all connected peers
     pub async fn broadcast(&self, message: AgentMessage) {
         let msg = serde_json::to_string(&message).unwrap();
         let _ = self.tx.send(msg);
+    }
+
+    /// Get the number of connected peers
+    pub async fn peer_count(&self) -> usize {
+        self.connected_peers.read().await.len()
+    }
+
+    /// Take the incoming message receiver (can only be called once)
+    pub async fn take_incoming_receiver(&self) -> Option<mpsc::Receiver<AgentMessage>> {
+        self.incoming_rx.write().await.take()
+    }
+
+    /// Check if we have any connected peers
+    pub async fn has_peers(&self) -> bool {
+        !self.connected_peers.read().await.is_empty()
     }
 }
 
@@ -128,7 +267,8 @@ impl WebSocketServer {
 struct AppState {
     tx: broadcast::Sender<String>,
     agent_id: String,
-    peers: Arc<RwLock<HashMap<String, broadcast::Sender<String>>>>,
+    connected_peers: Arc<RwLock<HashSet<String>>>,
+    incoming_tx: mpsc::Sender<AgentMessage>,
 }
 
 async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> Response {
@@ -140,10 +280,18 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     let rx = state.tx.subscribe();
     let agent_id = state.agent_id.clone();
     let tx = state.tx.clone();
+    let connected_peers = state.connected_peers.clone();
+    let incoming_tx = state.incoming_tx.clone();
 
     // Spawn task to handle incoming messages
     let recv_agent_id = agent_id.clone();
-    tokio::spawn(handle_incoming(receiver, tx, recv_agent_id));
+    tokio::spawn(handle_incoming(
+        receiver,
+        tx,
+        recv_agent_id,
+        connected_peers,
+        incoming_tx,
+    ));
 
     // Spawn task to handle outgoing messages
     tokio::spawn(handle_outgoing(sender, rx, agent_id));
@@ -153,13 +301,54 @@ async fn handle_incoming(
     mut receiver: SplitStream<WebSocket>,
     tx: broadcast::Sender<String>,
     agent_id: String,
+    connected_peers: Arc<RwLock<HashSet<String>>>,
+    incoming_tx: mpsc::Sender<AgentMessage>,
 ) {
+    let mut peer_agent_id: Option<String> = None;
+
     while let Some(Ok(msg)) = receiver.next().await {
         if let Message::Text(text) = msg {
-            println!("[{}] Received: {}", agent_id, text);
-            // Rebroadcast to other peers
-            let _ = tx.send(text.to_string());
+            println!("[{}] << Received: {}", agent_id, text);
+
+            if let Ok(parsed) = serde_json::from_str::<AgentMessage>(&text) {
+                match &parsed {
+                    AgentMessage::Presence { agent_id: peer_id } => {
+                        // New peer connected, send ack and track them
+                        peer_agent_id = Some(peer_id.clone());
+                        connected_peers.write().await.insert(peer_id.clone());
+                        println!("[{}] Peer joined: {}", agent_id, peer_id);
+
+                        // Send presence ack
+                        let ack = AgentMessage::PresenceAck {
+                            agent_id: agent_id.clone(),
+                        };
+                        let ack_msg = serde_json::to_string(&ack).unwrap();
+                        println!("[{}] >> Sending: {}", agent_id, ack_msg);
+                        let _ = tx.send(ack_msg);
+                    }
+                    AgentMessage::Ping { agent_id: _peer_id, seq } => {
+                        // Respond with pong
+                        let pong = AgentMessage::Pong {
+                            agent_id: agent_id.clone(),
+                            seq: *seq,
+                        };
+                        let pong_msg = serde_json::to_string(&pong).unwrap();
+                        println!("[{}] >> Sending: {}", agent_id, pong_msg);
+                        let _ = tx.send(pong_msg);
+                    }
+                    _ => {
+                        // Forward to incoming channel for agent to process
+                        let _ = incoming_tx.send(parsed).await;
+                    }
+                }
+            }
         }
+    }
+
+    // Peer disconnected
+    if let Some(peer_id) = peer_agent_id {
+        connected_peers.write().await.remove(&peer_id);
+        println!("[{}] Peer disconnected: {}", agent_id, peer_id);
     }
 }
 
@@ -173,6 +362,7 @@ async fn handle_outgoing(
         agent_id: agent_id.clone(),
     };
     let msg = serde_json::to_string(&presence).unwrap();
+    println!("[{}] >> Sending: {}", agent_id, msg);
     let _ = sender.send(Message::Text(msg.into())).await;
 
     // Forward broadcast messages

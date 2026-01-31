@@ -2,8 +2,9 @@ use crate::config::Config;
 use crate::executor::Executor;
 use crate::ollama::OllamaClient;
 use crate::search::WebSearch;
-use crate::websocket::{AgentMessage, WebSocketServer};
+use crate::websocket::{AgentMessage, PeerConnectionResult, WebSocketServer};
 use crate::writer::FileWriter;
+use rand::Rng;
 
 pub struct Agent {
     pub config: Config,
@@ -38,40 +39,106 @@ impl Agent {
             "[{}] Direction: {}",
             self.config.agent_id, self.config.direction
         );
+        println!(
+            "[{}] Ollama enabled: {}",
+            self.config.agent_id, self.config.ollama_enabled
+        );
 
         // Start WebSocket server
         self.websocket.start().await;
 
+        // Give the server a moment to start
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
         // Connect to peer agents
-        for peer in &self.config.peer_addresses {
-            self.websocket.connect_to_peer(peer).await;
+        let mut connected_count = 0;
+        let mut failed_count = 0;
+
+        if self.config.peer_addresses.is_empty() {
+            println!(
+                "[{}] No peer addresses configured (PEER_ADDRESSES not set)",
+                self.config.agent_id
+            );
+        } else {
+            println!(
+                "[{}] Attempting to connect to {} peer(s)...",
+                self.config.agent_id,
+                self.config.peer_addresses.len()
+            );
+
+            for peer in &self.config.peer_addresses {
+                match self.websocket.connect_to_peer(peer).await {
+                    PeerConnectionResult::Connected(_) => {
+                        connected_count += 1;
+                    }
+                    PeerConnectionResult::Failed(url, reason) => {
+                        failed_count += 1;
+                        println!(
+                            "[{}] Could not establish connection to {}: {}",
+                            self.config.agent_id, url, reason
+                        );
+                    }
+                }
+            }
+
+            println!(
+                "[{}] Peer connection summary: {} connected, {} failed",
+                self.config.agent_id, connected_count, failed_count
+            );
         }
 
-        // Broadcast presence
-        self.websocket
-            .broadcast(AgentMessage::Presence {
-                agent_id: self.config.agent_id.clone(),
-            })
-            .await;
+        // Give time for any incoming connections to complete handshake
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
-        // Fetch weather from the web
-        let weather = match self
-            .search
-            .fetch_url("https://wttr.in/North+Carolina?format=%l:+%c+%t&u")
-            .await
-        {
-            Ok(body) => {
-                let weather = body.trim().to_string();
-                println!("[{}] Weather fetched: {}", self.config.agent_id, weather);
-                Some(weather)
-            }
-            Err(e) => {
-                println!("[{}] Web fetch failed: {}", self.config.agent_id, e);
-                None
-            }
-        };
+        // Test peer communication
+        if self.websocket.has_peers().await {
+            println!("[{}] Testing peer communication...", self.config.agent_id);
 
-        // Run Ollama tests only if enabled
+            if self.config.ollama_enabled {
+                // Send LLM-generated greeting
+                if self.ollama.is_available().await {
+                    let prompt = "Generate a brief, friendly greeting message to say hello to other AI agents you're collaborating with. Keep it under 20 words.";
+                    match self.ollama.generate(prompt).await {
+                        Ok(greeting) => {
+                            let greeting = greeting.trim().to_string();
+                            println!(
+                                "[{}] Sending LLM-generated greeting to peers: {}",
+                                self.config.agent_id, greeting
+                            );
+                            self.websocket
+                                .broadcast(AgentMessage::Text {
+                                    agent_id: self.config.agent_id.clone(),
+                                    content: greeting,
+                                })
+                                .await;
+                        }
+                        Err(e) => {
+                            println!(
+                                "[{}] Failed to generate greeting: {}, sending random number instead",
+                                self.config.agent_id, e
+                            );
+                            self.send_random_number().await;
+                        }
+                    }
+                } else {
+                    println!(
+                        "[{}] Ollama not available, sending random number instead",
+                        self.config.agent_id
+                    );
+                    self.send_random_number().await;
+                }
+            } else {
+                // Ollama disabled, send random number
+                self.send_random_number().await;
+            }
+        } else {
+            println!(
+                "[{}] No peers connected, skipping communication test",
+                self.config.agent_id
+            );
+        }
+
+        // Run Ollama functionality tests only if enabled
         if self.config.ollama_enabled {
             println!(
                 "[{}] Ollama: {}",
@@ -82,19 +149,35 @@ impl Agent {
                 self.config.agent_id, self.config.ollama_model
             );
 
+            // Fetch weather from the web
+            let weather = match self
+                .search
+                .fetch_url("https://wttr.in/North+Carolina?format=%l:+%c+%t&u")
+                .await
+            {
+                Ok(body) => {
+                    let weather = body.trim().to_string();
+                    println!("[{}] Weather fetched: {}", self.config.agent_id, weather);
+                    Some(weather)
+                }
+                Err(e) => {
+                    println!("[{}] Web fetch failed: {}", self.config.agent_id, e);
+                    None
+                }
+            };
+
             // Use Ollama to describe the weather
             if self.ollama.is_available().await {
                 println!("[{}] Ollama connection OK", self.config.agent_id);
 
                 if let Some(weather) = weather {
                     let prompt = format!(
-                        "Based on this weather data: {}\n\n Describe the weather
-                        in one short sentence - accurately based on the data.",
+                        "Based on this weather data: {}\n\nDescribe the weather in one short sentence - accurately based on the data.",
                         weather
                     );
                     match self.ollama.generate(&prompt).await {
                         Ok(response) => {
-                            println!("[{}] 🤖: {}", self.config.agent_id, response.trim())
+                            println!("[{}] Weather: {}", self.config.agent_id, response.trim())
                         }
                         Err(e) => {
                             println!("[{}] Ollama generate failed: {}", self.config.agent_id, e)
@@ -130,10 +213,29 @@ impl Agent {
         }
 
         println!("[{}] Agent ready", self.config.agent_id);
+        println!(
+            "[{}] Connected peers: {}",
+            self.config.agent_id,
+            self.websocket.peer_count().await
+        );
 
         // Keep the agent running to maintain WebSocket connections
         loop {
             tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
         }
+    }
+
+    async fn send_random_number(&self) {
+        let value: u64 = rand::rng().random_range(1..=1000000);
+        println!(
+            "[{}] Sending random number to peers: {}",
+            self.config.agent_id, value
+        );
+        self.websocket
+            .broadcast(AgentMessage::Number {
+                agent_id: self.config.agent_id.clone(),
+                value,
+            })
+            .await;
     }
 }

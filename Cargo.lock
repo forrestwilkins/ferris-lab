@@ -218,6 +218,7 @@ dependencies = [
  "axum",
  "dotenvy",
  "futures-util",
+ "rand",
  "reqwest",
  "serde",
  "serde_json",
