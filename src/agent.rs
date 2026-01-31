@@ -30,13 +30,24 @@ impl Agent {
         println!("[{}] Ollama: {}", self.config.agent_id, self.config.ollama_host);
         println!("[{}] Model: {}", self.config.agent_id, self.config.ollama_model);
 
+        // Test Ollama connection
         if self.ollama.is_available().await {
             println!("[{}] Ollama connection OK", self.config.agent_id);
+
+            match self.ollama.generate("Say hello in exactly 5 words.").await {
+                Ok(response) => println!("[{}] Ollama test: {}", self.config.agent_id, response.trim()),
+                Err(e) => println!("[{}] Ollama generate failed: {}", self.config.agent_id, e),
+            }
         } else {
             println!("[{}] Warning: Ollama not available", self.config.agent_id);
         }
 
-        // Placeholder for main agent loop (will be expanded in later steps)
+        // Test web fetch
+        match self.search.fetch_url("https://httpbin.org/get").await {
+            Ok(body) => println!("[{}] Web fetch OK ({} bytes)", self.config.agent_id, body.len()),
+            Err(e) => println!("[{}] Web fetch failed: {}", self.config.agent_id, e),
+        }
+
         println!("[{}] Agent ready", self.config.agent_id);
     }
 }
