@@ -7,6 +7,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 use unicode_width::UnicodeWidthChar;
 
+const RESET: &str = "\x1b[0m";
+
 fn parse_arg(arg: &str) -> Option<(String, String)> {
     if let Some((left, right)) = arg.split_once('=') {
         return Some((left.to_string(), right.to_string()));
@@ -112,18 +114,18 @@ fn print_card(agent_id: &str, lines: &[String]) {
     let right_pad = inner.saturating_sub(title_len + left_pad);
 
     println!();
-    println!("┌{}{}{}┐", "─".repeat(left_pad), title, "─".repeat(right_pad));
+    println!("{}┌{}{}{}┐{}", RESET, "─".repeat(left_pad), title, "─".repeat(right_pad), RESET);
     let content_width = inner.saturating_sub(2);
     let trimmed = trim_empty_lines(lines);
-    println!("│ {} │", " ".repeat(content_width));
+    println!("{}│ {} │{}", RESET, " ".repeat(content_width), RESET);
     for line in trimmed {
-        for chunk in wrap_line(line, content_width) {
+        for chunk in wrap_line_words(line, content_width) {
             let padded = pad_to_width(&chunk, content_width);
-            println!("│ {} │", padded);
+            println!("{}│ {} │{}", RESET, padded, RESET);
         }
     }
-    println!("│ {} │", " ".repeat(content_width));
-    println!("└{}┘", "─".repeat(inner));
+    println!("{}│ {} │{}", RESET, " ".repeat(content_width), RESET);
+    println!("{}└{}┘{}", RESET, "─".repeat(inner), RESET);
 }
 
 fn trim_empty_lines<'a>(lines: &'a [String]) -> &'a [String] {
@@ -149,7 +151,7 @@ fn terminal_width() -> Option<usize> {
     None
 }
 
-fn wrap_line(line: &str, width: usize) -> Vec<String> {
+fn wrap_line_words(line: &str, width: usize) -> Vec<String> {
     if width == 0 {
         return vec![String::new()];
     }
@@ -159,8 +161,133 @@ fn wrap_line(line: &str, width: usize) -> Vec<String> {
     let mut chunks = Vec::new();
     let mut current = String::new();
     let mut current_width = 0usize;
-    let mut chars = line.chars().peekable();
+    let mut active_sgr = String::new();
 
+    let mut word = String::new();
+    let mut word_width = 0usize;
+    let mut word_has_text = false;
+
+    let flush_word = |current: &mut String,
+                          current_width: &mut usize,
+                          active_sgr: &str,
+                          word: &mut String,
+                          word_width: &mut usize,
+                          word_has_text: &mut bool,
+                          chunks: &mut Vec<String>| {
+        if word.is_empty() {
+            return;
+        }
+        if !*word_has_text {
+            word.clear();
+            *word_width = 0;
+            return;
+        }
+        if *word_width > width {
+            for part in split_word(word, width) {
+                if !current.is_empty() {
+                    chunks.push(std::mem::take(current));
+                    *current_width = 0;
+                }
+                let mut line = String::new();
+                if !active_sgr.is_empty() {
+                    line.push_str(active_sgr);
+                }
+                line.push_str(&part);
+                chunks.push(line);
+            }
+        } else if *current_width + *word_width > width && !current.is_empty() {
+            chunks.push(std::mem::take(current));
+            *current_width = 0;
+            if !active_sgr.is_empty() {
+                current.push_str(active_sgr);
+            }
+            current.push_str(word);
+            *current_width += *word_width;
+        } else {
+            if current.is_empty() && !active_sgr.is_empty() {
+                current.push_str(active_sgr);
+            }
+            current.push_str(word);
+            *current_width += *word_width;
+        }
+        word.clear();
+        *word_width = 0;
+        *word_has_text = false;
+    };
+
+    let mut chars = line.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\x1b' {
+            let mut seq = String::new();
+            seq.push(ch);
+            if let Some('[') = chars.peek().copied() {
+                seq.push('[');
+                chars.next();
+                while let Some(next) = chars.next() {
+                    seq.push(next);
+                    if ('@'..='~').contains(&next) {
+                        break;
+                    }
+                }
+            }
+            update_sgr_state(&seq, &mut active_sgr);
+            word.push_str(&seq);
+            continue;
+        }
+
+        if ch.is_whitespace() {
+            flush_word(
+                &mut current,
+                &mut current_width,
+                &active_sgr,
+                &mut word,
+                &mut word_width,
+                &mut word_has_text,
+                &mut chunks,
+            );
+            if !current.is_empty() {
+                if current_width + 1 > width {
+                    chunks.push(std::mem::take(&mut current));
+                    current_width = 0;
+                } else {
+                    current.push(' ');
+                    current_width += 1;
+                }
+            }
+            continue;
+        }
+
+        word.push(ch);
+        word_width += UnicodeWidthChar::width(ch).unwrap_or(0);
+        word_has_text = true;
+    }
+
+    flush_word(
+        &mut current,
+        &mut current_width,
+        &active_sgr,
+        &mut word,
+        &mut word_width,
+        &mut word_has_text,
+        &mut chunks,
+    );
+
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+
+    if chunks.is_empty() {
+        chunks.push(String::new());
+    }
+
+    chunks
+}
+
+fn split_word(word: &str, width: usize) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut current_width = 0usize;
+    let mut chars = word.chars().peekable();
     while let Some(ch) = chars.next() {
         if ch == '\x1b' {
             current.push(ch);
@@ -176,21 +303,31 @@ fn wrap_line(line: &str, width: usize) -> Vec<String> {
             }
             continue;
         }
-
         let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
         if current_width + ch_width > width && !current.is_empty() {
-            chunks.push(current);
+            parts.push(current);
             current = String::new();
             current_width = 0;
         }
         current.push(ch);
         current_width += ch_width;
     }
-
     if !current.is_empty() {
-        chunks.push(current);
+        parts.push(current);
     }
-    chunks
+    parts
+}
+
+fn update_sgr_state(seq: &str, active: &mut String) {
+    if !seq.ends_with('m') {
+        return;
+    }
+    let seq_body = seq.trim_start_matches("\x1b[").trim_end_matches('m');
+    if seq_body.is_empty() || seq_body.split(';').any(|part| part == "0") {
+        active.clear();
+    } else {
+        *active = seq.to_string();
+    }
 }
 
 fn visible_width(line: &str) -> usize {
@@ -220,6 +357,9 @@ fn pad_to_width(line: &str, width: usize) -> String {
     }
     let mut padded = String::with_capacity(line.len() + (width - current));
     padded.push_str(line);
+    if line.contains('\x1b') && !line.ends_with(RESET) {
+        padded.push_str(RESET);
+    }
     padded.push_str(&" ".repeat(width - current));
     padded
 }
