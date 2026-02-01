@@ -65,3 +65,32 @@ Run a focused test target:
 ```bash
 cargo test --test peer_communication
 ```
+
+## Running Multiple Agents in Parallel
+
+You can run multiple agents in parallel with plain bash. Each agent still gets its own environment variables, and their output is merged into one terminal feed.
+
+Two agents:
+
+```bash
+AGENT_ID=agent-1 AGENT_PORT=8080 PEER_ADDRESSES=ws://localhost:8081/ws cargo run &
+AGENT_ID=agent-2 AGENT_PORT=8081 PEER_ADDRESSES=ws://localhost:8080/ws cargo run &
+wait
+```
+
+Three agents:
+
+```bash
+AGENT_ID=agent-1 AGENT_PORT=8080 PEER_ADDRESSES=ws://localhost:8081/ws,ws://localhost:8082/ws cargo run &
+AGENT_ID=agent-2 AGENT_PORT=8081 PEER_ADDRESSES=ws://localhost:8080/ws,ws://localhost:8082/ws cargo run &
+AGENT_ID=agent-3 AGENT_PORT=8082 PEER_ADDRESSES=ws://localhost:8080/ws,ws://localhost:8081/ws cargo run &
+wait
+```
+
+Tip: if you see output buffering, run with line buffering so logs interleave cleanly:
+
+```bash
+stdbuf -oL -eL AGENT_ID=agent-1 AGENT_PORT=8080 PEER_ADDRESSES=ws://localhost:8081/ws cargo run &
+stdbuf -oL -eL AGENT_ID=agent-2 AGENT_PORT=8081 PEER_ADDRESSES=ws://localhost:8080/ws cargo run &
+wait
+```
