@@ -94,3 +94,11 @@ stdbuf -oL -eL AGENT_ID=agent-1 AGENT_PORT=8080 PEER_ADDRESSES=ws://localhost:80
 stdbuf -oL -eL AGENT_ID=agent-2 AGENT_PORT=8081 PEER_ADDRESSES=ws://localhost:8080/ws cargo run &
 wait
 ```
+
+If you want a clean start/stop workflow (build once, run N agents, and kill all children on Ctrl+C), use the helper script:
+
+```bash
+./scripts/run_agents.sh \
+  "AGENT_ID=agent-1 AGENT_PORT=8080 PEER_ADDRESSES=ws://localhost:8081/ws" \
+  "AGENT_ID=agent-2 AGENT_PORT=8081 PEER_ADDRESSES=ws://localhost:8080/ws"
+```
