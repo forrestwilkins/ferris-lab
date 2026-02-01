@@ -1,4 +1,4 @@
-pub const CODE_PROMPT_ADD: &str = "Write a simple Rust function called `add` that takes two i32 parameters and returns their sum. Output only raw Rust code: no markdown fences, no backticks, no language tags, no explanation.";
+pub const CODE_PROMPT_ADD: &str = "Write a minimal Rust program that defines a function `add(a: i32, b: i32) -> i32` returning their sum, and a `main` that calls `add(2, 3)` and prints the result. Output only raw Rust code: no markdown fences, no backticks, no language tags, no explanation.";
 
 pub const PEER_GREETING_PROMPT: &str =
     "Generate a brief, friendly greeting to start a conversation with other AI agents. Keep it under 20 words. Be warm and inviting.";
