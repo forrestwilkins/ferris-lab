@@ -104,7 +104,7 @@ fn main() -> io::Result<()> {
 }
 
 fn print_card(agent_id: &str, lines: &[String]) {
-    let width = 90usize;
+    let width = terminal_width().unwrap_or(90).max(60);
     let title = format!(" Agent: {} ", agent_id);
     let title_len = title.chars().count();
     let inner = width.saturating_sub(2);
@@ -114,13 +114,39 @@ fn print_card(agent_id: &str, lines: &[String]) {
     println!();
     println!("┌{}{}{}┐", "─".repeat(left_pad), title, "─".repeat(right_pad));
     let content_width = inner.saturating_sub(2);
-    for line in lines {
+    let trimmed = trim_empty_lines(lines);
+    println!("│ {} │", " ".repeat(content_width));
+    for line in trimmed {
         for chunk in wrap_line(line, content_width) {
             let padded = pad_to_width(&chunk, content_width);
             println!("│ {} │", padded);
         }
     }
+    println!("│ {} │", " ".repeat(content_width));
     println!("└{}┘", "─".repeat(inner));
+}
+
+fn trim_empty_lines<'a>(lines: &'a [String]) -> &'a [String] {
+    let mut start = 0usize;
+    let mut end = lines.len();
+    while start < end && lines[start].trim().is_empty() {
+        start += 1;
+    }
+    while end > start && lines[end - 1].trim().is_empty() {
+        end -= 1;
+    }
+    &lines[start..end]
+}
+
+fn terminal_width() -> Option<usize> {
+    if let Ok(columns) = env::var("COLUMNS") {
+        if let Ok(value) = columns.parse::<usize>() {
+            if value > 0 {
+                return Some(value);
+            }
+        }
+    }
+    None
 }
 
 fn wrap_line(line: &str, width: usize) -> Vec<String> {
