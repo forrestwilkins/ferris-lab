@@ -6,7 +6,7 @@ use crate::search::WebSearch;
 use crate::websocket::{AgentMessage, PeerConnectionResult, WebSocketServer};
 use crate::writer::FileWriter;
 use rand::Rng;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -22,6 +22,8 @@ pub struct Agent {
     pub websocket: WebSocketServer,
     /// Track message counts per peer conversation: peer_id -> messages sent by us
     conversation_counts: Arc<RwLock<HashMap<String, usize>>>,
+    /// Track which peers we've already logged as complete
+    conversation_completed: Arc<RwLock<HashSet<String>>>,
 }
 
 impl Agent {
@@ -40,6 +42,7 @@ impl Agent {
             writer,
             websocket,
             conversation_counts: Arc::new(RwLock::new(HashMap::new())),
+            conversation_completed: Arc::new(RwLock::new(HashSet::new())),
         }
     }
 
@@ -138,6 +141,7 @@ impl Agent {
             let ollama_enabled = self.config.ollama_enabled;
             let websocket = self.websocket.clone();
             let conversation_counts = self.conversation_counts.clone();
+            let conversation_completed = self.conversation_completed.clone();
 
             tokio::spawn(async move {
                 while let Some(msg) = incoming_rx.recv().await {
@@ -154,13 +158,25 @@ impl Agent {
 
                         // Each agent sends at most 2 messages (4 total in conversation)
                         if our_count >= MAX_CONVERSATION_MESSAGES / 2 {
-                            output::agent_info(
-                                &agent_id,
-                                &format!(
-                                    "Conversation with {} complete ({} messages sent)",
-                                    peer_id, our_count
-                                ),
-                            );
+                            let should_log = {
+                                let mut completed = conversation_completed.write().await;
+                                if completed.contains(&peer_id) {
+                                    false
+                                } else {
+                                    completed.insert(peer_id.clone());
+                                    true
+                                }
+                            };
+
+                            if should_log {
+                                output::agent_info(
+                                    &agent_id,
+                                    &format!(
+                                        "Conversation with {} complete ({} messages sent)",
+                                        peer_id, our_count
+                                    ),
+                                );
+                            }
                             continue;
                         }
 
@@ -178,10 +194,12 @@ impl Agent {
                                     let response = response.trim().to_string();
 
                                     // Update our message count
-                                    {
+                                    let new_count = {
                                         let mut counts = conversation_counts.write().await;
-                                        *counts.entry(peer_id.clone()).or_insert(0) += 1;
-                                    }
+                                        let entry = counts.entry(peer_id.clone()).or_insert(0);
+                                        *entry += 1;
+                                        *entry
+                                    };
 
                                     output::agent_success(
                                         &agent_id,
@@ -194,6 +212,29 @@ impl Agent {
                                             content: response,
                                         })
                                         .await;
+
+                                    if new_count >= MAX_CONVERSATION_MESSAGES / 2 {
+                                        let should_log = {
+                                            let mut completed =
+                                                conversation_completed.write().await;
+                                            if completed.contains(&peer_id) {
+                                                false
+                                            } else {
+                                                completed.insert(peer_id.clone());
+                                                true
+                                            }
+                                        };
+
+                                        if should_log {
+                                            output::agent_info(
+                                                &agent_id,
+                                                &format!(
+                                                    "Conversation with {} complete ({} messages sent)",
+                                                    peer_id, new_count
+                                                ),
+                                            );
+                                        }
+                                    }
                                 }
                                 Err(e) => {
                                     output::agent_error(
