@@ -3,7 +3,7 @@
 ## Project overview
 
 - Ferris Lab is a Rust-based factory for building CLI utilities via multiple cooperating agents.
-- The core agent runtime lives in `src/`, with the CLI entrypoint in `src/main.rs` and shared logic in `src/lib.rs`.
+- The core agent runtime lives in `src/`, with the CLI entrypoint in `src/main.rs` and library module wiring in `src/lib.rs`.
 - Agents communicate over WebSockets (Axum + tokio-tungstenite) and can be run via Docker or `cargo run`.
 - Scripts for multi-agent orchestration live in `scripts/`, and integration coverage is in `tests/peer_communication.rs`.
 
