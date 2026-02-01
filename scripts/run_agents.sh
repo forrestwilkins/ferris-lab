@@ -60,9 +60,9 @@ for env_block in "$@"; do
 
   if command -v setsid >/dev/null 2>&1; then
     use_process_group=true
-    setsid env $env_block "$BIN_PATH" >"$fifo_path" 2>&1 &
+    setsid env FERRIS_MERGED_OUTPUT=1 $env_block "$BIN_PATH" >"$fifo_path" 2>&1 &
   else
-    env $env_block "$BIN_PATH" >"$fifo_path" 2>&1 &
+    env FERRIS_MERGED_OUTPUT=1 $env_block "$BIN_PATH" >"$fifo_path" 2>&1 &
   fi
   pids+=("$!")
 done
