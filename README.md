@@ -55,3 +55,11 @@ AGENT_ID=agent-2 AGENT_PORT=8081 PEER_ADDRESSES=ws://localhost:8080/ws cargo run
 ```
 
 `dotenvy` loads variables from `.env` into the process environment at startup without overriding existing environment variables, so any values you set in your shell take precedence.
+
+## Running Tests
+
+Run a focused test target:
+
+```bash
+cargo test --test peer_communication
+```
