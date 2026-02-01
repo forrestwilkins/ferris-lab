@@ -1,0 +1,33 @@
+services:
+  agent:
+    build: .
+    ports:
+      - "${AGENT_PORT:-8080}:${AGENT_PORT:-8080}"
+    volumes:
+      - ./workspace:/workspace
+      - cargo-cache:/home/agent/.cargo
+    environment:
+      - AGENT_ID=${AGENT_ID:-agent-1}
+      - AGENT_PORT=${AGENT_PORT:-8080}
+      - OLLAMA_HOST=http://ollama:${OLLAMA_PORT:-11434}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-gpt-oss:20b}
+      - DIRECTION=${DIRECTION:-roam}
+      - PEER_ADDRESSES=${PEER_ADDRESSES:-}
+    security_opt:
+      - seccomp:seccomp-profile.json
+    restart: always
+    depends_on:
+      - ollama
+
+  ollama:
+    container_name: ollama
+    image: ollama/ollama:latest
+    ports:
+      - "${OLLAMA_PORT:-11434}:${OLLAMA_PORT:-11434}"
+    volumes:
+      - ollama:/root/.ollama
+    restart: always
+
+volumes:
+  cargo-cache:
+  ollama:
