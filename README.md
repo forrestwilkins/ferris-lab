@@ -36,6 +36,8 @@ docker-compose up -d
 
 ## Running Agents with Cargo
 
+Use these commands when running agents locally (outside Docker).
+
 Create a local `.env` file unless you plan to provide all settings via your shell environment:
 
 ```bash
