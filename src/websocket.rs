@@ -136,10 +136,7 @@ impl WebSocketServer {
                     tokio::time::sleep(Duration::from_millis(200)).await;
                 }
                 Err(err) => {
-                    output::agent_error(
-                        &agent_id,
-                        &format!("Failed to bind to {}: {}", addr, err),
-                    );
+                    output::agent_error(&agent_id, &format!("Failed to bind to {}: {}", addr, err));
                     std::process::exit(1);
                 }
             }
@@ -239,10 +236,17 @@ impl WebSocketServer {
                                 }
                             }
                             // Peer disconnected - only log if we actually removed them
-                            let was_connected = connected_peers_clone.write().await.remove(&peer_id);
-                            connected_urls_clone.write().await.remove(&peer_url_for_cleanup);
+                            let was_connected =
+                                connected_peers_clone.write().await.remove(&peer_id);
+                            connected_urls_clone
+                                .write()
+                                .await
+                                .remove(&peer_url_for_cleanup);
                             if was_connected {
-                                output::agent_warn(&agent_id_recv, &format!("Peer disconnected: {}", peer_id));
+                                output::agent_warn(
+                                    &agent_id_recv,
+                                    &format!("Peer disconnected: {}", peer_id),
+                                );
                             }
                         });
 
@@ -437,7 +441,11 @@ async fn handle_outgoing(
 
     // Forward broadcast messages
     while let Ok(msg) = rx.recv().await {
-        if sender.send(Message::Text(msg.clone().into())).await.is_err() {
+        if sender
+            .send(Message::Text(msg.clone().into()))
+            .await
+            .is_err()
+        {
             break;
         }
     }

@@ -115,7 +115,14 @@ fn print_card(agent_id: &str, lines: &[String]) {
     let right_pad = inner.saturating_sub(title_len + left_pad);
 
     println!();
-    println!("{}┌{}{}{}┐{}", RESET, "─".repeat(left_pad), title, "─".repeat(right_pad), RESET);
+    println!(
+        "{}┌{}{}{}┐{}",
+        RESET,
+        "─".repeat(left_pad),
+        title,
+        "─".repeat(right_pad),
+        RESET
+    );
     let content_width = inner.saturating_sub(2);
     let trimmed = trim_empty_lines(lines);
     println!("{}│ {} │{}", RESET, " ".repeat(content_width), RESET);
@@ -174,12 +181,12 @@ fn wrap_line_words(line: &str, width: usize) -> Vec<String> {
     let mut word_has_text = false;
 
     let flush_word = |current: &mut String,
-                          current_width: &mut usize,
-                          active_sgr: &str,
-                          word: &mut String,
-                          word_width: &mut usize,
-                          word_has_text: &mut bool,
-                          chunks: &mut Vec<String>| {
+                      current_width: &mut usize,
+                      active_sgr: &str,
+                      word: &mut String,
+                      word_width: &mut usize,
+                      word_has_text: &mut bool,
+                      chunks: &mut Vec<String>| {
         if word.is_empty() {
             return;
         }
