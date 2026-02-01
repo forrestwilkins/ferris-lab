@@ -5,6 +5,7 @@ use std::io::{self, BufRead, BufReader};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant};
+use unicode_width::UnicodeWidthChar;
 
 fn parse_arg(arg: &str) -> Option<(String, String)> {
     if let Some((left, right)) = arg.split_once('=') {
@@ -86,11 +87,8 @@ fn main() -> io::Result<()> {
                 if lines.is_empty() {
                     continue;
                 }
-                println!();
-                println!("---- [{}] ----", agent_id);
-                for line in lines.drain(..) {
-                    println!("{}", line);
-                }
+                print_card(&agent_id, &lines);
+                lines.clear();
             }
         }
     }
@@ -99,12 +97,103 @@ fn main() -> io::Result<()> {
         if lines.is_empty() {
             continue;
         }
-        println!();
-        println!("---- [{}] ----", agent_id);
-        for line in lines {
-            println!("{}", line);
-        }
+        print_card(&agent_id, &lines);
     }
 
     Ok(())
+}
+
+fn print_card(agent_id: &str, lines: &[String]) {
+    let width = 90usize;
+    let title = format!(" Agent: {} ", agent_id);
+    let title_len = title.chars().count();
+    let inner = width.saturating_sub(2);
+    let left_pad = inner.saturating_sub(title_len) / 2;
+    let right_pad = inner.saturating_sub(title_len + left_pad);
+
+    println!();
+    println!("┌{}{}{}┐", "─".repeat(left_pad), title, "─".repeat(right_pad));
+    let content_width = inner.saturating_sub(2);
+    for line in lines {
+        for chunk in wrap_line(line, content_width) {
+            let padded = pad_to_width(&chunk, content_width);
+            println!("│ {} │", padded);
+        }
+    }
+    println!("└{}┘", "─".repeat(inner));
+}
+
+fn wrap_line(line: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return vec![String::new()];
+    }
+    if line.is_empty() {
+        return vec![String::new()];
+    }
+    let mut chunks = Vec::new();
+    let mut current = String::new();
+    let mut current_width = 0usize;
+    let mut chars = line.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch == '\x1b' {
+            current.push(ch);
+            if let Some('[') = chars.peek().copied() {
+                current.push('[');
+                chars.next();
+                while let Some(next) = chars.next() {
+                    current.push(next);
+                    if ('@'..='~').contains(&next) {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+
+        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if current_width + ch_width > width && !current.is_empty() {
+            chunks.push(current);
+            current = String::new();
+            current_width = 0;
+        }
+        current.push(ch);
+        current_width += ch_width;
+    }
+
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+    chunks
+}
+
+fn visible_width(line: &str) -> usize {
+    let mut width = 0usize;
+    let mut chars = line.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\x1b' {
+            if let Some('[') = chars.peek().copied() {
+                chars.next();
+                while let Some(next) = chars.next() {
+                    if ('@'..='~').contains(&next) {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        width += UnicodeWidthChar::width(ch).unwrap_or(0);
+    }
+    width
+}
+
+fn pad_to_width(line: &str, width: usize) -> String {
+    let current = visible_width(line);
+    if current >= width {
+        return line.to_string();
+    }
+    let mut padded = String::with_capacity(line.len() + (width - current));
+    padded.push_str(line);
+    padded.push_str(&" ".repeat(width - current));
+    padded
 }

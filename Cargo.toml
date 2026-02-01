@@ -17,6 +17,7 @@ futures-util = "0.3"
 rand = "0.9"
 owo-colors = "4.2.3"
 indicatif = "0.18.3"
+unicode-width = "0.2"
 
 [lib]
 name = "ferris_lab"
