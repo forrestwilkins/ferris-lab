@@ -14,6 +14,7 @@ use futures_util::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::io::ErrorKind;
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, RwLock};
 use tokio::time::{timeout, Duration};
@@ -117,7 +118,43 @@ impl WebSocketServer {
             .with_state(app_state);
 
         let addr = format!("0.0.0.0:{}", self.port);
-        let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
+        let mut listener = None;
+        for attempt in 1..=5 {
+            match tokio::net::TcpListener::bind(&addr).await {
+                Ok(bound) => {
+                    listener = Some(bound);
+                    break;
+                }
+                Err(err) if err.kind() == ErrorKind::AddrInUse => {
+                    output::agent_warn(
+                        &agent_id,
+                        &format!(
+                            "Port {} is already in use (attempt {}/5). Retrying...",
+                            self.port, attempt
+                        ),
+                    );
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+                Err(err) => {
+                    output::agent_error(
+                        &agent_id,
+                        &format!("Failed to bind to {}: {}", addr, err),
+                    );
+                    std::process::exit(1);
+                }
+            }
+        }
+
+        let Some(listener) = listener else {
+            output::agent_error(
+                &agent_id,
+                &format!(
+                    "Port {} is still in use. Is another agent running? Try `pkill -f ferris-lab` or change AGENT_PORT.",
+                    self.port
+                ),
+            );
+            std::process::exit(1);
+        };
         output::agent_success(
             &agent_id,
             &format!("WebSocket server listening on :{}", self.port),

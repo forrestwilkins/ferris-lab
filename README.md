@@ -102,3 +102,5 @@ If you want a clean start/stop workflow (build once, run N agents, and kill all 
   "AGENT_ID=agent-1 AGENT_PORT=8080 PEER_ADDRESSES=ws://localhost:8081/ws" \
   "AGENT_ID=agent-2 AGENT_PORT=8081 PEER_ADDRESSES=ws://localhost:8080/ws"
 ```
+
+The script groups output by agent in short bursts so startup sections stay readable when merged.
