@@ -76,9 +76,9 @@ pub fn agent_error(agent_id: &str, message: &str) {
     );
 }
 
-/// Print a peer communication message - outgoing (magenta with arrow)
-pub fn peer_send(agent_id: &str, message: &str) {
-    let key = format!("send:{}:{}", agent_id, message);
+/// Print a peer communication message - outgoing text (magenta with arrow)
+pub fn peer_send_text(agent_id: &str, content: &str) {
+    let key = format!("send:text:{}:{}", agent_id, content);
     if is_duplicate(&key) {
         return;
     }
@@ -88,13 +88,13 @@ pub fn peer_send(agent_id: &str, message: &str) {
         ROBOT,
         format!("[{}]", agent_id).magenta().bold(),
         ">>".magenta().bold(),
-        message.magenta()
+        content.magenta()
     );
 }
 
-/// Print a peer communication message - incoming (blue with arrow)
-pub fn peer_recv(agent_id: &str, message: &str) {
-    let key = format!("recv:{}:{}", agent_id, message);
+/// Print a peer communication message - incoming text (blue with arrow)
+pub fn peer_recv_text(agent_id: &str, content: &str) {
+    let key = format!("recv:text:{}:{}", agent_id, content);
     if is_duplicate(&key) {
         return;
     }
@@ -104,7 +104,39 @@ pub fn peer_recv(agent_id: &str, message: &str) {
         ROBOT,
         format!("[{}]", agent_id).blue().bold(),
         "<<".blue().bold(),
-        message.blue()
+        content.blue()
+    );
+}
+
+/// Print a peer communication message - outgoing number (magenta with arrow)
+pub fn peer_send_number(agent_id: &str, value: u64) {
+    let key = format!("send:number:{}:{}", agent_id, value);
+    if is_duplicate(&key) {
+        return;
+    }
+    println!();
+    println!(
+        "{} {} {} {}",
+        ROBOT,
+        format!("[{}]", agent_id).magenta().bold(),
+        ">>".magenta().bold(),
+        format!("number: {}", value).magenta()
+    );
+}
+
+/// Print a peer communication message - incoming number (blue with arrow)
+pub fn peer_recv_number(agent_id: &str, value: u64) {
+    let key = format!("recv:number:{}:{}", agent_id, value);
+    if is_duplicate(&key) {
+        return;
+    }
+    println!();
+    println!(
+        "{} {} {} {}",
+        ROBOT,
+        format!("[{}]", agent_id).blue().bold(),
+        "<<".blue().bold(),
+        format!("number: {}", value).blue()
     );
 }
 

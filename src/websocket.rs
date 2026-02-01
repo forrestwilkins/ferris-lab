@@ -155,7 +155,6 @@ impl WebSocketServer {
                     agent_id: agent_id.clone(),
                 };
                 let msg = serde_json::to_string(&presence).unwrap();
-                output::peer_send(&agent_id, &msg);
                 let _ = write.send(TungsteniteMessage::Text(msg.into())).await;
 
                 // Wait for presence_ack with timeout
@@ -167,7 +166,7 @@ impl WebSocketServer {
                                     return Some(peer_id.clone());
                                 }
                                 // Handle other messages
-                                output::peer_recv(&agent_id, &text);
+                                log_peer_message_received(&parsed);
                                 let _ = incoming_tx.send(parsed).await;
                             }
                         }
@@ -194,9 +193,9 @@ impl WebSocketServer {
                         tokio::spawn(async move {
                             while let Some(Ok(msg)) = read.next().await {
                                 if let TungsteniteMessage::Text(text) = msg {
-                                    output::peer_recv(&agent_id_recv, &text);
                                     if let Ok(parsed) = serde_json::from_str::<AgentMessage>(&text)
                                     {
+                                        log_peer_message_received(&parsed);
                                         let _ = incoming_tx_clone.send(parsed).await;
                                     }
                                 }
@@ -212,14 +211,14 @@ impl WebSocketServer {
                         let agent_id_send = agent_id.clone();
                         tokio::spawn(async move {
                             while let Ok(msg) = rx.recv().await {
-                                output::peer_send(&agent_id_send, &msg);
                                 if write
-                                    .send(TungsteniteMessage::Text(msg.into()))
+                                    .send(TungsteniteMessage::Text(msg.clone().into()))
                                     .await
                                     .is_err()
                                 {
                                     break;
                                 }
+                                log_peer_message_sent(&agent_id_send, &msg);
                             }
                         });
 
@@ -334,8 +333,6 @@ async fn handle_incoming(
 
     while let Some(Ok(msg)) = receiver.next().await {
         if let Message::Text(text) = msg {
-            output::peer_recv(&agent_id, &text);
-
             if let Ok(parsed) = serde_json::from_str::<AgentMessage>(&text) {
                 match &parsed {
                     AgentMessage::Presence { agent_id: peer_id } => {
@@ -349,7 +346,6 @@ async fn handle_incoming(
                             agent_id: agent_id.clone(),
                         };
                         let ack_msg = serde_json::to_string(&ack).unwrap();
-                        output::peer_send(&agent_id, &ack_msg);
                         let _ = tx.send(ack_msg);
                     }
                     AgentMessage::Ping {
@@ -362,7 +358,6 @@ async fn handle_incoming(
                             seq: *seq,
                         };
                         let pong_msg = serde_json::to_string(&pong).unwrap();
-                        output::peer_send(&agent_id, &pong_msg);
                         let _ = tx.send(pong_msg);
                     }
                     _ => {
@@ -393,13 +388,35 @@ async fn handle_outgoing(
         agent_id: agent_id.clone(),
     };
     let msg = serde_json::to_string(&presence).unwrap();
-    output::peer_send(&agent_id, &msg);
     let _ = sender.send(Message::Text(msg.into())).await;
 
     // Forward broadcast messages
     while let Ok(msg) = rx.recv().await {
-        if sender.send(Message::Text(msg.into())).await.is_err() {
+        if sender.send(Message::Text(msg.clone().into())).await.is_err() {
             break;
         }
+        log_peer_message_sent(&agent_id, &msg);
+    }
+}
+
+fn log_peer_message_sent(agent_id: &str, raw: &str) {
+    if let Ok(parsed) = serde_json::from_str::<AgentMessage>(raw) {
+        match parsed {
+            AgentMessage::Text { content, .. } => {
+                output::peer_send_text(agent_id, content.trim_matches('"'))
+            }
+            AgentMessage::Number { value, .. } => output::peer_send_number(agent_id, value),
+            _ => {}
+        }
+    }
+}
+
+fn log_peer_message_received(message: &AgentMessage) {
+    match message {
+        AgentMessage::Text { agent_id, content } => {
+            output::peer_recv_text(agent_id, content.trim_matches('"'))
+        }
+        AgentMessage::Number { agent_id, value } => output::peer_recv_number(agent_id, *value),
+        _ => {}
     }
 }

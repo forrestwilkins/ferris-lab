@@ -307,11 +307,6 @@ impl Agent {
                                         *entry
                                     };
 
-                                    output::agent_success(
-                                        &agent_id,
-                                        &format!("Replying to {}: \"{}\"", peer_id, response),
-                                    );
-
                                     websocket
                                         .broadcast(AgentMessage::Text {
                                             agent_id: agent_id.clone(),
