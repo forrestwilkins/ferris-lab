@@ -196,15 +196,14 @@ impl WebSocketServer {
 
                 // Wait for presence_ack with timeout
                 let ack_result = timeout(Duration::from_secs(3), async {
+                    let mut pending = Vec::new();
                     while let Some(Ok(msg)) = read.next().await {
                         if let TungsteniteMessage::Text(text) = msg {
                             if let Ok(parsed) = serde_json::from_str::<AgentMessage>(&text) {
                                 if let AgentMessage::PresenceAck { agent_id: peer_id } = &parsed {
-                                    return Some(peer_id.clone());
+                                    return Some((peer_id.clone(), pending));
                                 }
-                                // Handle other messages
-                                log_peer_message_received(&parsed);
-                                let _ = incoming_tx.send(parsed).await;
+                                pending.push(parsed);
                             }
                         }
                     }
@@ -213,13 +212,16 @@ impl WebSocketServer {
                 .await;
 
                 match ack_result {
-                    Ok(Some(peer_id)) => {
+                    Ok(Some((peer_id, pending))) => {
                         output::agent_success(
                             &agent_id,
                             &format!("🤝 Handshake complete with peer: {}", peer_id),
                         );
                         connected_peers.write().await.insert(peer_id.clone());
                         connected_urls.write().await.insert(peer_url_owned.clone());
+                        for msg in pending {
+                            let _ = incoming_tx.send(msg).await;
+                        }
 
                         // Spawn tasks to handle ongoing communication
                         let agent_id_recv = agent_id.clone();
@@ -232,7 +234,6 @@ impl WebSocketServer {
                                 if let TungsteniteMessage::Text(text) = msg {
                                     if let Ok(parsed) = serde_json::from_str::<AgentMessage>(&text)
                                     {
-                                        log_peer_message_received(&parsed);
                                         let _ = incoming_tx_clone.send(parsed).await;
                                     }
                                 }
@@ -245,7 +246,6 @@ impl WebSocketServer {
                             }
                         });
 
-                        let agent_id_send = agent_id.clone();
                         tokio::spawn(async move {
                             while let Ok(msg) = rx.recv().await {
                                 if write
@@ -255,7 +255,6 @@ impl WebSocketServer {
                                 {
                                     break;
                                 }
-                                log_peer_message_sent(&agent_id_send, &msg);
                             }
                         });
 
@@ -367,6 +366,7 @@ async fn handle_incoming(
     incoming_tx: mpsc::Sender<AgentMessage>,
 ) {
     let mut peer_agent_id: Option<String> = None;
+    let mut pending = Vec::new();
 
     while let Some(Ok(msg)) = receiver.next().await {
         if let Message::Text(text) = msg {
@@ -384,6 +384,10 @@ async fn handle_incoming(
                         };
                         let ack_msg = serde_json::to_string(&ack).unwrap();
                         let _ = tx.send(ack_msg);
+
+                        for msg in pending.drain(..) {
+                            let _ = incoming_tx.send(msg).await;
+                        }
                     }
                     AgentMessage::Ping {
                         agent_id: _peer_id,
@@ -398,8 +402,12 @@ async fn handle_incoming(
                         let _ = tx.send(pong_msg);
                     }
                     _ => {
-                        // Forward to incoming channel for agent to process
-                        let _ = incoming_tx.send(parsed).await;
+                        if peer_agent_id.is_some() {
+                            // Forward to incoming channel for agent to process
+                            let _ = incoming_tx.send(parsed).await;
+                        } else {
+                            pending.push(parsed);
+                        }
                     }
                 }
             }
@@ -432,28 +440,5 @@ async fn handle_outgoing(
         if sender.send(Message::Text(msg.clone().into())).await.is_err() {
             break;
         }
-        log_peer_message_sent(&agent_id, &msg);
-    }
-}
-
-fn log_peer_message_sent(agent_id: &str, raw: &str) {
-    if let Ok(parsed) = serde_json::from_str::<AgentMessage>(raw) {
-        match parsed {
-            AgentMessage::Text { content, .. } => {
-                output::peer_send_text(agent_id, content.trim_matches('"'))
-            }
-            AgentMessage::Number { value, .. } => output::peer_send_number(agent_id, value),
-            _ => {}
-        }
-    }
-}
-
-fn log_peer_message_received(message: &AgentMessage) {
-    match message {
-        AgentMessage::Text { agent_id, content } => {
-            output::peer_recv_text(agent_id, content.trim_matches('"'))
-        }
-        AgentMessage::Number { agent_id, value } => output::peer_recv_number(agent_id, *value),
-        _ => {}
     }
 }

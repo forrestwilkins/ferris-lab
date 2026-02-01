@@ -22,6 +22,8 @@ pub struct Agent {
     pub websocket: WebSocketServer,
     /// Track message counts per peer conversation: peer_id -> messages sent by us
     conversation_counts: Arc<RwLock<HashMap<String, usize>>>,
+    /// Track message counts per peer conversation: peer_id -> messages received by us
+    conversation_received_counts: Arc<RwLock<HashMap<String, usize>>>,
     /// Track which peers we've already logged as complete
     conversation_completed: Arc<RwLock<HashSet<String>>>,
 }
@@ -42,7 +44,32 @@ impl Agent {
             writer,
             websocket,
             conversation_counts: Arc::new(RwLock::new(HashMap::new())),
+            conversation_received_counts: Arc::new(RwLock::new(HashMap::new())),
             conversation_completed: Arc::new(RwLock::new(HashSet::new())),
+        }
+    }
+
+    async fn maybe_log_conversation_complete(
+        agent_id: &str,
+        peer_id: &str,
+        our_count: usize,
+        recv_count: usize,
+        conversation_completed: &Arc<RwLock<HashSet<String>>>,
+    ) {
+        let limit = MAX_CONVERSATION_MESSAGES / 2;
+        if our_count < limit || recv_count < limit {
+            return;
+        }
+
+        let mut completed = conversation_completed.write().await;
+        if completed.insert(peer_id.to_string()) {
+            output::agent_info(
+                agent_id,
+                &format!(
+                    "Conversation with {} complete ({} messages sent)",
+                    peer_id, our_count
+                ),
+            );
         }
     }
 
@@ -247,104 +274,94 @@ impl Agent {
             let ollama_enabled = self.config.ollama_enabled;
             let websocket = self.websocket.clone();
             let conversation_counts = self.conversation_counts.clone();
+            let conversation_received_counts = self.conversation_received_counts.clone();
             let conversation_completed = self.conversation_completed.clone();
 
             tokio::spawn(async move {
                 while let Some(msg) = incoming_rx.recv().await {
-                    if let AgentMessage::Text {
-                        agent_id: peer_id,
-                        content,
-                    } = msg
-                    {
-                        // Check if we should respond (limit conversation length)
-                        let our_count = {
-                            let counts = conversation_counts.read().await;
-                            counts.get(&peer_id).copied().unwrap_or(0)
-                        };
-
-                        // Each agent sends at most 2 messages (4 total in conversation)
-                        if our_count >= MAX_CONVERSATION_MESSAGES / 2 {
-                            let should_log = {
-                                let mut completed = conversation_completed.write().await;
-                                if completed.contains(&peer_id) {
-                                    false
-                                } else {
-                                    completed.insert(peer_id.clone());
-                                    true
-                                }
+                    match msg {
+                        AgentMessage::Text {
+                            agent_id: peer_id,
+                            content,
+                        } => {
+                            output::peer_recv_text(&peer_id, content.trim_matches('"'));
+                            let recv_count = {
+                                let mut counts = conversation_received_counts.write().await;
+                                let entry = counts.entry(peer_id.clone()).or_insert(0);
+                                *entry += 1;
+                                *entry
                             };
 
-                            if should_log {
-                                output::agent_info(
+                            // Check if we should respond (limit conversation length)
+                            let our_count = {
+                                let counts = conversation_counts.read().await;
+                                counts.get(&peer_id).copied().unwrap_or(0)
+                            };
+
+                            // Each agent sends at most 2 messages (4 total in conversation)
+                            if our_count >= MAX_CONVERSATION_MESSAGES / 2 {
+                                Agent::maybe_log_conversation_complete(
                                     &agent_id,
-                                    &format!(
-                                        "Conversation with {} complete ({} messages sent)",
-                                        peer_id, our_count
-                                    ),
-                                );
+                                    &peer_id,
+                                    our_count,
+                                    recv_count,
+                                    &conversation_completed,
+                                )
+                                .await;
+                                continue;
                             }
-                            continue;
-                        }
 
-                        // Generate a response if Ollama is available
-                        if ollama_enabled && ollama.is_available().await {
-                            let prompt = format!(
-                                "You are an AI agent named {}. Another AI agent named {} just said: \"{}\"\n\n\
-                                 Generate a brief, friendly response (under 25 words). Be conversational but concise. \
-                                 If this feels like a closing message, say a brief goodbye.",
-                                agent_id, peer_id, content
-                            );
+                            // Generate a response if Ollama is available
+                            if ollama_enabled && ollama.is_available().await {
+                                let prompt = format!(
+                                    "You are an AI agent named {}. Another AI agent named {} just said: \"{}\"\n\n\
+                                     Generate a brief, friendly response (under 25 words). Be conversational but concise. \
+                                     If this feels like a closing message, say a brief goodbye.",
+                                    agent_id, peer_id, content
+                                );
 
-                            match ollama.generate(&prompt).await {
-                                Ok(response) => {
-                                    let response = response.trim().to_string();
+                                match ollama.generate(&prompt).await {
+                                    Ok(response) => {
+                                        let response = response.trim().to_string();
 
-                                    // Update our message count
-                                    let new_count = {
-                                        let mut counts = conversation_counts.write().await;
-                                        let entry = counts.entry(peer_id.clone()).or_insert(0);
-                                        *entry += 1;
-                                        *entry
-                                    };
-
-                                    websocket
-                                        .broadcast(AgentMessage::Text {
-                                            agent_id: agent_id.clone(),
-                                            content: response,
-                                        })
-                                        .await;
-
-                                    if new_count >= MAX_CONVERSATION_MESSAGES / 2 {
-                                        let should_log = {
-                                            let mut completed =
-                                                conversation_completed.write().await;
-                                            if completed.contains(&peer_id) {
-                                                false
-                                            } else {
-                                                completed.insert(peer_id.clone());
-                                                true
-                                            }
+                                        // Update our message count
+                                        let new_count = {
+                                            let mut counts = conversation_counts.write().await;
+                                            let entry = counts.entry(peer_id.clone()).or_insert(0);
+                                            *entry += 1;
+                                            *entry
                                         };
 
-                                        if should_log {
-                                            output::agent_info(
-                                                &agent_id,
-                                                &format!(
-                                                    "Conversation with {} complete ({} messages sent)",
-                                                    peer_id, new_count
-                                                ),
-                                            );
-                                        }
+                                        output::peer_send_text(&agent_id, &response);
+                                        websocket
+                                            .broadcast(AgentMessage::Text {
+                                                agent_id: agent_id.clone(),
+                                                content: response,
+                                            })
+                                            .await;
+
+                                        Agent::maybe_log_conversation_complete(
+                                            &agent_id,
+                                            &peer_id,
+                                            new_count,
+                                            recv_count,
+                                            &conversation_completed,
+                                        )
+                                        .await;
                                     }
-                                }
-                                Err(e) => {
-                                    output::agent_error(
-                                        &agent_id,
-                                        &format!("Failed to generate response: {}", e),
-                                    );
+                                    Err(e) => {
+                                        output::agent_error(
+                                            &agent_id,
+                                            &format!("Failed to generate response: {}", e),
+                                        );
+                                    }
                                 }
                             }
                         }
+                        AgentMessage::Number { agent_id, value } => {
+                            output::peer_recv_number(&agent_id, value);
+                        }
+                        _ => {}
                     }
                 }
             });
@@ -378,6 +395,7 @@ impl Agent {
                             &self.config.agent_id,
                             &format!("Starting conversation: \"{}\"", greeting),
                         );
+                        output::peer_send_text(&self.config.agent_id, &greeting);
                         self.websocket
                             .broadcast(AgentMessage::Text {
                                 agent_id: self.config.agent_id.clone(),
@@ -444,6 +462,7 @@ impl Agent {
                                 &self.config.agent_id,
                                 &format!("Starting conversation: \"{}\"", greeting),
                             );
+                            output::peer_send_text(&self.config.agent_id, &greeting);
                             self.websocket
                                 .broadcast(AgentMessage::Text {
                                     agent_id: self.config.agent_id.clone(),
@@ -495,6 +514,7 @@ impl Agent {
                             &self.config.agent_id,
                             &format!("Starting conversation: \"{}\"", greeting),
                         );
+                        output::peer_send_text(&self.config.agent_id, &greeting);
                         self.websocket
                             .broadcast(AgentMessage::Text {
                                 agent_id: self.config.agent_id.clone(),
@@ -507,6 +527,11 @@ impl Agent {
 
             // Retry connecting to any peers we're not connected to
             if !self.config.peer_addresses.is_empty() {
+                let connected = self.websocket.peer_count().await;
+                if connected >= self.config.peer_addresses.len() {
+                    continue;
+                }
+
                 for peer in &self.config.peer_addresses {
                     if !self.websocket.is_connected_to_url(peer).await {
                         output::agent_status(
@@ -536,6 +561,7 @@ impl Agent {
             &self.config.agent_id,
             &format!("Sending random number to peers: {}", value),
         );
+        output::peer_send_number(&self.config.agent_id, value);
         self.websocket
             .broadcast(AgentMessage::Number {
                 agent_id: self.config.agent_id.clone(),
