@@ -8,7 +8,9 @@ use crate::websocket::{AgentMessage, PeerConnectionResult, WebSocketServer};
 use crate::writer::FileWriter;
 use rand::Rng;
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::sync::Arc;
+use tokio::fs;
 use tokio::sync::RwLock;
 
 /// Maximum messages per conversation (total across both agents)
@@ -193,13 +195,49 @@ impl Agent {
             match self.ollama.generate(prompts::CODE_PROMPT_ADD).await {
                 Ok(code) => {
                     let code = sanitize_generated_code(&code);
-                    match self.writer.write_file("test/add.rs", &code).await {
+                    let project_dir = "generated_add";
+                    let cargo_toml = Path::new("./workspace")
+                        .join(project_dir)
+                        .join("Cargo.toml");
+
+                    if fs::metadata(&cargo_toml).await.is_err() {
+                        match self.executor.cargo_new(project_dir).await {
+                            Ok(message) => output::agent_success(&self.config.agent_id, &message),
+                            Err(e) => output::agent_error(
+                                &self.config.agent_id,
+                                &format!("Project creation failed: {}", e),
+                            ),
+                        }
+                    }
+
+                    let main_path = format!("{}/src/main.rs", project_dir);
+                    match self.writer.write_file(&main_path, &code).await {
                         Ok(path) => {
                             output::agent_success(
                                 &self.config.agent_id,
                                 &format!("Code written to: {}", path),
                             );
                             output::code_block(&self.config.agent_id, &code);
+
+                            match self.executor.cargo_run(project_dir).await {
+                                Ok(output) => {
+                                    output::agent_success(
+                                        &self.config.agent_id,
+                                        "Code executed successfully",
+                                    );
+                                    let trimmed = output.trim();
+                                    if !trimmed.is_empty() {
+                                        output::agent_info(
+                                            &self.config.agent_id,
+                                            &format!("Program output: {}", trimmed),
+                                        );
+                                    }
+                                }
+                                Err(e) => output::agent_error(
+                                    &self.config.agent_id,
+                                    &format!("Code execution failed: {}", e),
+                                ),
+                            }
                         }
                         Err(e) => output::agent_error(
                             &self.config.agent_id,
