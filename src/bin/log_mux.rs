@@ -5,6 +5,7 @@ use std::io::{self, BufRead, BufReader};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant};
+use terminal_size::{terminal_size, Width};
 use unicode_width::UnicodeWidthChar;
 
 const RESET: &str = "\x1b[0m";
@@ -141,6 +142,11 @@ fn trim_empty_lines<'a>(lines: &'a [String]) -> &'a [String] {
 }
 
 fn terminal_width() -> Option<usize> {
+    if let Some((Width(w), _)) = terminal_size() {
+        if w > 0 {
+            return Some(w as usize);
+        }
+    }
     if let Ok(columns) = env::var("COLUMNS") {
         if let Ok(value) = columns.parse::<usize>() {
             if value > 0 {
