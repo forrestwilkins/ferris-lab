@@ -41,10 +41,13 @@ pub struct Agent {
     pub search: WebSearch,
     pub writer: FileWriter,
     pub websocket: WebSocketServer,
+
     /// Track message counts per peer conversation: peer_id -> messages sent by us
     conversation_counts: Arc<RwLock<HashMap<String, usize>>>,
+
     /// Track message counts per peer conversation: peer_id -> messages received by us
     conversation_received_counts: Arc<RwLock<HashMap<String, usize>>>,
+
     /// Track which peers we've already logged as complete
     conversation_completed: Arc<RwLock<HashSet<String>>>,
 }
