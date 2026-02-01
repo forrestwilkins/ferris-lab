@@ -68,6 +68,7 @@ pub enum PeerConnectionResult {
     Failed(String, String),
 }
 
+#[derive(Clone)]
 pub struct WebSocketServer {
     agent_id: String,
     port: u16,
@@ -280,6 +281,11 @@ impl WebSocketServer {
     /// Check if we have any connected peers
     pub async fn has_peers(&self) -> bool {
         !self.connected_peers.read().await.is_empty()
+    }
+
+    /// Get all connected peer IDs
+    pub async fn get_peer_ids(&self) -> Vec<String> {
+        self.connected_peers.read().await.iter().cloned().collect()
     }
 }
 

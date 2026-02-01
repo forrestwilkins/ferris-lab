@@ -6,6 +6,12 @@ use crate::search::WebSearch;
 use crate::websocket::{AgentMessage, PeerConnectionResult, WebSocketServer};
 use crate::writer::FileWriter;
 use rand::Rng;
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::RwLock;
+
+/// Maximum messages per conversation (total across both agents)
+const MAX_CONVERSATION_MESSAGES: usize = 4;
 
 pub struct Agent {
     pub config: Config,
@@ -14,6 +20,8 @@ pub struct Agent {
     pub search: WebSearch,
     pub writer: FileWriter,
     pub websocket: WebSocketServer,
+    /// Track message counts per peer conversation: peer_id -> messages sent by us
+    conversation_counts: Arc<RwLock<HashMap<String, usize>>>,
 }
 
 impl Agent {
@@ -31,6 +39,7 @@ impl Agent {
             search,
             writer,
             websocket,
+            conversation_counts: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -119,56 +128,140 @@ impl Agent {
         // Give time for any incoming connections to complete handshake
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
-        // Test peer communication
-        output::section("Communication Test");
+        // Start conversation handler
+        output::section("Agent Communication");
 
-        if self.websocket.has_peers().await {
-            output::agent_status(&self.config.agent_id, "Testing peer communication...");
+        // Take the incoming message receiver and spawn handler
+        if let Some(mut incoming_rx) = self.websocket.take_incoming_receiver().await {
+            let agent_id = self.config.agent_id.clone();
+            let ollama = self.ollama.clone();
+            let ollama_enabled = self.config.ollama_enabled;
+            let websocket = self.websocket.clone();
+            let conversation_counts = self.conversation_counts.clone();
 
-            if self.config.ollama_enabled {
-                // Send LLM-generated greeting
-                if self.ollama.is_available().await {
-                    let prompt = "Generate a brief, friendly greeting message to say hello to other AI agents you're collaborating with. Keep it under 20 words.";
-                    match self.ollama.generate(prompt).await {
-                        Ok(greeting) => {
-                            let greeting = greeting.trim().to_string();
-                            output::agent_success(
-                                &self.config.agent_id,
-                                &format!("Sending greeting to peers: \"{}\"", greeting),
-                            );
-                            self.websocket
-                                .broadcast(AgentMessage::Text {
-                                    agent_id: self.config.agent_id.clone(),
-                                    content: greeting,
-                                })
-                                .await;
-                        }
-                        Err(e) => {
-                            output::agent_warn(
-                                &self.config.agent_id,
+            tokio::spawn(async move {
+                while let Some(msg) = incoming_rx.recv().await {
+                    if let AgentMessage::Text {
+                        agent_id: peer_id,
+                        content,
+                    } = msg
+                    {
+                        // Check if we should respond (limit conversation length)
+                        let our_count = {
+                            let counts = conversation_counts.read().await;
+                            counts.get(&peer_id).copied().unwrap_or(0)
+                        };
+
+                        // Each agent sends at most 2 messages (4 total in conversation)
+                        if our_count >= MAX_CONVERSATION_MESSAGES / 2 {
+                            output::agent_info(
+                                &agent_id,
                                 &format!(
-                                    "Failed to generate greeting: {}, sending random number",
-                                    e
+                                    "Conversation with {} complete ({} messages sent)",
+                                    peer_id, our_count
                                 ),
                             );
-                            self.send_random_number().await;
+                            continue;
+                        }
+
+                        // Generate a response if Ollama is available
+                        if ollama_enabled && ollama.is_available().await {
+                            let prompt = format!(
+                                "You are an AI agent named {}. Another AI agent named {} just said: \"{}\"\n\n\
+                                 Generate a brief, friendly response (under 25 words). Be conversational but concise. \
+                                 If this feels like a closing message, say a brief goodbye.",
+                                agent_id, peer_id, content
+                            );
+
+                            match ollama.generate(&prompt).await {
+                                Ok(response) => {
+                                    let response = response.trim().to_string();
+
+                                    // Update our message count
+                                    {
+                                        let mut counts = conversation_counts.write().await;
+                                        *counts.entry(peer_id.clone()).or_insert(0) += 1;
+                                    }
+
+                                    output::agent_success(
+                                        &agent_id,
+                                        &format!("Replying to {}: \"{}\"", peer_id, response),
+                                    );
+
+                                    websocket
+                                        .broadcast(AgentMessage::Text {
+                                            agent_id: agent_id.clone(),
+                                            content: response,
+                                        })
+                                        .await;
+                                }
+                                Err(e) => {
+                                    output::agent_error(
+                                        &agent_id,
+                                        &format!("Failed to generate response: {}", e),
+                                    );
+                                }
+                            }
                         }
                     }
-                } else {
-                    output::agent_warn(
-                        &self.config.agent_id,
-                        "Ollama not available, sending random number instead",
-                    );
-                    self.send_random_number().await;
                 }
-            } else {
-                // Ollama disabled, send random number
+            });
+        }
+
+        // Only initiate conversation if we have the "lower" agent ID (to avoid both starting)
+        // This ensures exactly one agent starts the conversation
+        let has_peers = self.websocket.has_peers().await;
+        let peers = self.websocket.get_peer_ids().await;
+
+        if has_peers {
+            let should_initiate = peers.iter().all(|peer| self.config.agent_id < *peer);
+
+            if should_initiate && self.config.ollama_enabled && self.ollama.is_available().await {
+                output::agent_status(&self.config.agent_id, "Initiating conversation with peers...");
+
+                let prompt = "Generate a brief, friendly greeting to start a conversation with other AI agents. Keep it under 20 words. Be warm and inviting.";
+                match self.ollama.generate(prompt).await {
+                    Ok(greeting) => {
+                        let greeting = greeting.trim().to_string();
+
+                        // Count this as our first message to all peers
+                        {
+                            let mut counts = self.conversation_counts.write().await;
+                            for peer in &peers {
+                                *counts.entry(peer.clone()).or_insert(0) += 1;
+                            }
+                        }
+
+                        output::agent_success(
+                            &self.config.agent_id,
+                            &format!("Starting conversation: \"{}\"", greeting),
+                        );
+                        self.websocket
+                            .broadcast(AgentMessage::Text {
+                                agent_id: self.config.agent_id.clone(),
+                                content: greeting,
+                            })
+                            .await;
+                    }
+                    Err(e) => {
+                        output::agent_warn(
+                            &self.config.agent_id,
+                            &format!("Failed to generate greeting: {}", e),
+                        );
+                    }
+                }
+            } else if !should_initiate {
+                output::agent_info(
+                    &self.config.agent_id,
+                    "Waiting for peer to initiate conversation...",
+                );
+            } else if !self.config.ollama_enabled {
                 self.send_random_number().await;
             }
         } else {
             output::agent_info(
                 &self.config.agent_id,
-                "No peers connected, skipping communication test",
+                "No peers connected, waiting for connections...",
             );
         }
 
@@ -256,12 +349,101 @@ impl Agent {
 
         output::agent_ready(&self.config.agent_id, self.websocket.peer_count().await);
 
+        // Quick poll for peers if we don't have any yet (check every 500ms for 5 seconds)
+        let mut initiated_conversation = has_peers;
+        if !initiated_conversation {
+            for _ in 0..10 {
+                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+                if self.websocket.has_peers().await {
+                    let peers = self.websocket.get_peer_ids().await;
+                    let should_initiate = peers.iter().all(|peer| self.config.agent_id < *peer);
+
+                    if should_initiate
+                        && self.config.ollama_enabled
+                        && self.ollama.is_available().await
+                    {
+                        initiated_conversation = true;
+                        output::peer_event(
+                            &self.config.agent_id,
+                            "Peers connected! Starting conversation...",
+                        );
+
+                        let prompt = "Generate a brief, friendly greeting to start a conversation with other AI agents. Keep it under 20 words. Be warm and inviting.";
+                        if let Ok(greeting) = self.ollama.generate(prompt).await {
+                            let greeting = greeting.trim().to_string();
+
+                            {
+                                let mut counts = self.conversation_counts.write().await;
+                                for peer in &peers {
+                                    *counts.entry(peer.clone()).or_insert(0) += 1;
+                                }
+                            }
+
+                            output::agent_success(
+                                &self.config.agent_id,
+                                &format!("Starting conversation: \"{}\"", greeting),
+                            );
+                            self.websocket
+                                .broadcast(AgentMessage::Text {
+                                    agent_id: self.config.agent_id.clone(),
+                                    content: greeting,
+                                })
+                                .await;
+                        }
+                        break;
+                    } else if !should_initiate {
+                        // The other agent will initiate
+                        initiated_conversation = true;
+                        break;
+                    }
+                }
+            }
+        }
+
         // Keep the agent running and periodically retry peer connections
         let retry_interval = tokio::time::Duration::from_secs(10);
-        let mut sent_first_message = self.websocket.has_peers().await;
 
         loop {
             tokio::time::sleep(retry_interval).await;
+
+            // Check if we should initiate now (if we have new peers and haven't initiated yet)
+            if !initiated_conversation && self.websocket.has_peers().await {
+                let peers = self.websocket.get_peer_ids().await;
+                let should_initiate = peers.iter().all(|peer| self.config.agent_id < *peer);
+
+                if should_initiate && self.config.ollama_enabled && self.ollama.is_available().await
+                {
+                    initiated_conversation = true;
+                    output::peer_event(
+                        &self.config.agent_id,
+                        "Peers connected! Starting conversation...",
+                    );
+
+                    let prompt = "Generate a brief, friendly greeting to start a conversation with other AI agents. Keep it under 20 words. Be warm and inviting.";
+                    if let Ok(greeting) = self.ollama.generate(prompt).await {
+                        let greeting = greeting.trim().to_string();
+
+                        {
+                            let mut counts = self.conversation_counts.write().await;
+                            for peer in &peers {
+                                *counts.entry(peer.clone()).or_insert(0) += 1;
+                            }
+                        }
+
+                        output::agent_success(
+                            &self.config.agent_id,
+                            &format!("Starting conversation: \"{}\"", greeting),
+                        );
+                        self.websocket
+                            .broadcast(AgentMessage::Text {
+                                agent_id: self.config.agent_id.clone(),
+                                content: greeting,
+                            })
+                            .await;
+                    }
+                }
+            }
 
             // Retry connecting to any peers we're not connected to
             if !self.config.peer_addresses.is_empty() {
@@ -283,34 +465,6 @@ impl Agent {
                             }
                         }
                     }
-                }
-            }
-
-            // Send test message when we first get peers (if we didn't have any at startup)
-            if !sent_first_message && self.websocket.has_peers().await {
-                sent_first_message = true;
-                output::peer_event(
-                    &self.config.agent_id,
-                    "First peer connected! Sending test message...",
-                );
-                if self.config.ollama_enabled {
-                    if self.ollama.is_available().await {
-                        let prompt = "Generate a brief, friendly greeting message to say hello to other AI agents. Keep it under 20 words.";
-                        if let Ok(greeting) = self.ollama.generate(prompt).await {
-                            self.websocket
-                                .broadcast(AgentMessage::Text {
-                                    agent_id: self.config.agent_id.clone(),
-                                    content: greeting.trim().to_string(),
-                                })
-                                .await;
-                        } else {
-                            self.send_random_number().await;
-                        }
-                    } else {
-                        self.send_random_number().await;
-                    }
-                } else {
-                    self.send_random_number().await;
                 }
             }
         }

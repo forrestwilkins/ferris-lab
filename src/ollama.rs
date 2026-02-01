@@ -23,6 +23,7 @@ pub struct GenerateResponse {
     pub done: bool,
 }
 
+#[derive(Clone)]
 pub struct OllamaClient {
     client: Client,
     host: String,
