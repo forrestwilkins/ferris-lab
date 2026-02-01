@@ -33,3 +33,25 @@ When multiple agents work together, they vote on which one serves the Git reposi
 ```bash
 docker-compose up -d
 ```
+
+## Running Agents with Cargo
+
+Create a local `.env` file unless you plan to provide all settings via your shell environment:
+
+```bash
+cp .env.example .env
+```
+
+Run a single agent with defaults (loaded from `.env` if present):
+
+```bash
+cargo run
+```
+
+Override `.env` values by supplying environment variables inline:
+
+```bash
+AGENT_ID=agent-2 AGENT_PORT=8081 PEER_ADDRESSES=ws://localhost:8080/ws cargo run
+```
+
+`dotenvy` loads variables from `.env` into the process environment at startup without overriding existing environment variables, so any values you set in your shell take precedence.
