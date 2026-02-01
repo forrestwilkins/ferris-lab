@@ -14,6 +14,32 @@ use tokio::sync::RwLock;
 /// Maximum messages per conversation (total across both agents)
 const MAX_CONVERSATION_MESSAGES: usize = 4;
 
+fn sanitize_generated_code(code: &str) -> String {
+    let trimmed = code.trim();
+    let mut in_fence = false;
+    let mut collected: Vec<&str> = Vec::new();
+
+    for line in trimmed.lines() {
+        if line.trim_start().starts_with("```") {
+            if in_fence {
+                break;
+            }
+            in_fence = true;
+            continue;
+        }
+
+        if in_fence {
+            collected.push(line);
+        }
+    }
+
+    if in_fence && !collected.is_empty() {
+        return collected.join("\n").trim().to_string();
+    }
+
+    trimmed.to_string()
+}
+
 pub struct Agent {
     pub config: Config,
     pub ollama: OllamaClient,
@@ -166,14 +192,14 @@ impl Agent {
             output::section("Code Generation");
             match self.ollama.generate(prompts::CODE_PROMPT_ADD).await {
                 Ok(code) => {
-                    let code = code.trim();
-                    match self.writer.write_file("test/add.rs", code).await {
+                    let code = sanitize_generated_code(&code);
+                    match self.writer.write_file("test/add.rs", &code).await {
                         Ok(path) => {
                             output::agent_success(
                                 &self.config.agent_id,
                                 &format!("Code written to: {}", path),
                             );
-                            output::code_block(&self.config.agent_id, code);
+                            output::code_block(&self.config.agent_id, &code);
                         }
                         Err(e) => output::agent_error(
                             &self.config.agent_id,
