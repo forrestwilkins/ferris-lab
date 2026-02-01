@@ -200,10 +200,12 @@ impl WebSocketServer {
                                     }
                                 }
                             }
-                            // Peer disconnected
-                            connected_peers_clone.write().await.remove(&peer_id);
+                            // Peer disconnected - only log if we actually removed them
+                            let was_connected = connected_peers_clone.write().await.remove(&peer_id);
                             connected_urls_clone.write().await.remove(&peer_url_for_cleanup);
-                            output::agent_warn(&agent_id_recv, &format!("Peer disconnected: {}", peer_id));
+                            if was_connected {
+                                output::agent_warn(&agent_id_recv, &format!("Peer disconnected: {}", peer_id));
+                            }
                         });
 
                         let agent_id_send = agent_id.clone();
@@ -366,10 +368,12 @@ async fn handle_incoming(
         }
     }
 
-    // Peer disconnected
+    // Peer disconnected - only log if we actually removed them
     if let Some(peer_id) = peer_agent_id {
-        connected_peers.write().await.remove(&peer_id);
-        output::agent_warn(&agent_id, &format!("Peer disconnected: {}", peer_id));
+        let was_connected = connected_peers.write().await.remove(&peer_id);
+        if was_connected {
+            output::agent_warn(&agent_id, &format!("Peer disconnected: {}", peer_id));
+        }
     }
 }
 

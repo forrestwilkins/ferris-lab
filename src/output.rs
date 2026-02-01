@@ -1,7 +1,25 @@
 use owo_colors::OwoColorize;
+use std::collections::HashSet;
+use std::sync::Mutex;
 
 /// Robot emoji prefix for all agent output
 const ROBOT: &str = "🤖";
+
+/// Track recently logged peer messages to avoid duplicates
+static RECENT_MESSAGES: Mutex<Option<HashSet<String>>> = Mutex::new(None);
+
+/// Check if a message was recently logged, and mark it as seen
+fn is_duplicate(key: &str) -> bool {
+    let mut guard = RECENT_MESSAGES.lock().unwrap();
+    let set = guard.get_or_insert_with(HashSet::new);
+
+    // Keep the set from growing unbounded (simple cleanup)
+    if set.len() > 100 {
+        set.clear();
+    }
+
+    !set.insert(key.to_string())
+}
 
 /// Print an agent status message (cyan)
 pub fn agent_status(agent_id: &str, message: &str) {
@@ -60,6 +78,10 @@ pub fn agent_error(agent_id: &str, message: &str) {
 
 /// Print a peer communication message - outgoing (magenta with arrow)
 pub fn peer_send(agent_id: &str, message: &str) {
+    let key = format!("send:{}:{}", agent_id, message);
+    if is_duplicate(&key) {
+        return;
+    }
     println!();
     println!(
         "{} {} {} {}",
@@ -72,6 +94,10 @@ pub fn peer_send(agent_id: &str, message: &str) {
 
 /// Print a peer communication message - incoming (blue with arrow)
 pub fn peer_recv(agent_id: &str, message: &str) {
+    let key = format!("recv:{}:{}", agent_id, message);
+    if is_duplicate(&key) {
+        return;
+    }
     println!();
     println!(
         "{} {} {} {}",
