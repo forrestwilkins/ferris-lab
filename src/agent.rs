@@ -68,6 +68,112 @@ impl Agent {
             );
         }
 
+        // Initialize Ollama before starting the WebSocket server
+        let ollama_ready = if self.config.ollama_enabled {
+            output::section("Ollama LLM");
+            output::config_item(&self.config.agent_id, "Host", &self.config.ollama_host);
+            output::config_item(&self.config.agent_id, "Model", &self.config.ollama_model);
+            if self.ollama.is_available().await {
+                output::agent_success(&self.config.agent_id, "Ollama connection OK ✓");
+                true
+            } else {
+                output::agent_warn(&self.config.agent_id, "Ollama not available");
+                false
+            }
+        } else {
+            output::agent_info(&self.config.agent_id, "Ollama disabled");
+            false
+        };
+
+        // Fetch weather before starting the WebSocket server
+        output::section("Weather");
+        let weather = match self
+            .search
+            .fetch_url("https://wttr.in/North+Carolina?format=%l:+%c+%t&u")
+            .await
+        {
+            Ok(body) => {
+                let weather = body.trim().to_string();
+                output::agent_success(
+                    &self.config.agent_id,
+                    &format!("Weather fetched: {}", weather),
+                );
+                Some(weather)
+            }
+            Err(e) => {
+                output::agent_error(&self.config.agent_id, &format!("Web fetch failed: {}", e));
+                None
+            }
+        };
+
+        if let Some(weather) = weather {
+            if self.config.ollama_enabled && ollama_ready {
+                let prompt = format!(
+                    "Based on this weather data: {}\n\nDescribe the weather in one short sentence - accurately based on the data.",
+                    weather
+                );
+                match self.ollama.generate(&prompt).await {
+                    Ok(response) => output::agent_info(
+                        &self.config.agent_id,
+                        &format!("🌤️  Weather: {}", response.trim()),
+                    ),
+                    Err(e) => {
+                        output::agent_error(
+                            &self.config.agent_id,
+                            &format!("Ollama generate failed: {}", e),
+                        );
+                        output::agent_info(
+                            &self.config.agent_id,
+                            &format!("🌤️  Weather: {}", weather),
+                        );
+                    }
+                }
+            } else {
+                output::agent_info(
+                    &self.config.agent_id,
+                    &format!("🌤️  Weather: {}", weather),
+                );
+            }
+        }
+
+        // Generate code before starting the WebSocket server
+        if self.config.ollama_enabled && ollama_ready {
+            output::section("Code Generation");
+            let code_prompt = "Write a simple Rust function called `add` that takes two i32 parameters and returns their sum. Only output the code, no explanation.";
+            match self.ollama.generate(code_prompt).await {
+                Ok(code) => {
+                    let code = code.trim();
+                    match self.writer.write_file("test/add.rs", code).await {
+                        Ok(path) => {
+                            output::agent_success(
+                                &self.config.agent_id,
+                                &format!("Code written to: {}", path),
+                            );
+                            output::code_block(&self.config.agent_id, code);
+                        }
+                        Err(e) => output::agent_error(
+                            &self.config.agent_id,
+                            &format!("File write failed: {}", e),
+                        ),
+                    }
+                }
+                Err(e) => output::agent_error(
+                    &self.config.agent_id,
+                    &format!("Code generation failed: {}", e),
+                ),
+            }
+        } else if self.config.ollama_enabled {
+            output::agent_warn(
+                &self.config.agent_id,
+                "Ollama not available, skipping code generation",
+            );
+        } else {
+            output::agent_info(
+                &self.config.agent_id,
+                "Ollama disabled, skipping code generation",
+            );
+        }
+
         // Start WebSocket server
         self.websocket.start().await;
 
@@ -304,88 +410,6 @@ impl Agent {
                 &self.config.agent_id,
                 "No peers connected, waiting for connections...",
             );
-        }
-
-        // Run Ollama functionality tests only if enabled
-        if self.config.ollama_enabled {
-            output::section("Ollama LLM");
-            output::config_item(&self.config.agent_id, "Host", &self.config.ollama_host);
-            output::config_item(&self.config.agent_id, "Model", &self.config.ollama_model);
-
-            // Fetch weather from the web
-            let weather = match self
-                .search
-                .fetch_url("https://wttr.in/North+Carolina?format=%l:+%c+%t&u")
-                .await
-            {
-                Ok(body) => {
-                    let weather = body.trim().to_string();
-                    output::agent_success(
-                        &self.config.agent_id,
-                        &format!("Weather fetched: {}", weather),
-                    );
-                    Some(weather)
-                }
-                Err(e) => {
-                    output::agent_error(
-                        &self.config.agent_id,
-                        &format!("Web fetch failed: {}", e),
-                    );
-                    None
-                }
-            };
-
-            // Use Ollama to describe the weather
-            if self.ollama.is_available().await {
-                output::agent_success(&self.config.agent_id, "Ollama connection OK ✓");
-
-                if let Some(weather) = weather {
-                    let prompt = format!(
-                        "Based on this weather data: {}\n\nDescribe the weather in one short sentence - accurately based on the data.",
-                        weather
-                    );
-                    match self.ollama.generate(&prompt).await {
-                        Ok(response) => output::agent_info(
-                            &self.config.agent_id,
-                            &format!("🌤️  Weather: {}", response.trim()),
-                        ),
-                        Err(e) => output::agent_error(
-                            &self.config.agent_id,
-                            &format!("Ollama generate failed: {}", e),
-                        ),
-                    }
-                }
-
-                // Test code generation and file writing
-                output::section("Code Generation");
-                let code_prompt = "Write a simple Rust function called `add` that takes two i32 parameters and returns their sum. Only output the code, no explanation.";
-                match self.ollama.generate(code_prompt).await {
-                    Ok(code) => {
-                        let code = code.trim();
-                        match self.writer.write_file("test/add.rs", code).await {
-                            Ok(path) => {
-                                output::agent_success(
-                                    &self.config.agent_id,
-                                    &format!("Code written to: {}", path),
-                                );
-                                output::code_block(&self.config.agent_id, code);
-                            }
-                            Err(e) => output::agent_error(
-                                &self.config.agent_id,
-                                &format!("File write failed: {}", e),
-                            ),
-                        }
-                    }
-                    Err(e) => output::agent_error(
-                        &self.config.agent_id,
-                        &format!("Code generation failed: {}", e),
-                    ),
-                }
-            } else {
-                output::agent_warn(&self.config.agent_id, "Ollama not available");
-            }
-        } else {
-            output::agent_info(&self.config.agent_id, "Ollama disabled, skipping LLM tests");
         }
 
         output::agent_ready(&self.config.agent_id, self.websocket.peer_count().await);
